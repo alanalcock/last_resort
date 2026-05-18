@@ -16,6 +16,9 @@
 # next.js
 /.next/
 /out/
+/dist/
+/build/
+/coverage/
 
 # production
 /build
@@ -23,6 +26,8 @@
 # misc
 .DS_Store
 *.pem
+.agents/
+skills-lock.json
 
 # debug
 npm-debug.log*
@@ -32,6 +37,20 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+
+# local payroll/import data
+sqlite_data_backup.json
+*.xlsx
+*.xls
+*.xlsm
+*.ods
+*.numbers
+*.sqlite
+*.sqlite3
+*.db
+!prisma/migrations/**
+!prisma/schema.prisma
+prisma/dev.db
 
 # vercel
 .vercel
