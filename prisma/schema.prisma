@@ -1,0 +1,76 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "windows"]
+}
+
+model Staff {
+  id            Int      @id @default(autoincrement())
+  name          String
+  email         String?  @unique
+  status        String   @default("Active")
+  joined_date   String?
+  trn           String?  @unique
+  phone         String?
+  nis_number    String?  @unique
+  employee_id   String?  @unique
+  password      String?
+  send_whatsapp Boolean  @default(false)
+  send_email    Boolean  @default(false)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  delivery_logs DeliveryLog[]
+  payslips      Payslip[]
+}
+
+model DeliveryLog {
+  id              Int      @id @default(autoincrement())
+  staff_id        Int?
+  staff           Staff?   @relation(fields: [staff_id], references: [id])
+  date_sent       String?
+  whatsapp_status String?
+  email_status    String?
+  payslip_data    Json?
+  created_at      DateTime @default(now())
+}
+
+model Setting {
+  key        String   @id
+  value      String
+  updated_at DateTime @default(now()) @updatedAt
+}
+
+model BroadcastRun {
+  id              Int      @id @default(autoincrement())
+  created_at      DateTime @default(now())
+  filename        String?
+  total_records   Int?
+  matched_records Int?
+  sent_records    Int?
+}
+
+model Payslip {
+  id                Int      @id @default(autoincrement())
+  staff_id          Int
+  staff             Staff    @relation(fields: [staff_id], references: [id], onDelete: Cascade)
+  pay_date          String?
+  pay_period        String?
+  total_current     Float    @default(0)
+  total_ytd         Float    @default(0)
+  deduction_current Float    @default(0)
+  deduction_ytd     Float    @default(0)
+  net_pay_current   Float    @default(0)
+  net_pay_ytd       Float    @default(0)
+  vacation_used     Float?
+  benefits          Float?
+  paye_refund       Float?
+  earnings          Json?
+  deductions        Json?
+  raw_rows          Json?
+  created_at        DateTime @default(now())
+}
