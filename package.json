@@ -4,9 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "next dev --webpack",
-    "build": "next build",
+    "build": "prisma generate && next build",
     "start": "next start",
     "lint": "eslint . --cache --cache-location .next/cache/eslint/",
+    "postinstall": "prisma generate",
     "typecheck": "tsc --noEmit --pretty false",
     "clean": "node -e \"const fs=require('fs'); for (const dir of ['.next','out','dist','build','coverage']) fs.rmSync(dir,{recursive:true,force:true});\""
   },
