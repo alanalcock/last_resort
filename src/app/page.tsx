@@ -133,52 +133,66 @@ export default function Home() {
     setIsProcessing(true);
     setProcessingStatus('Publishing payslips to employee portal...');
 
-    const localLogs = await Promise.all(previewBatch.map(async (entry) => {
-      const emailStatus = entry.staff.send_email && entry.staff.email ? 'PDF Ready' : 'Not Sent';
+    const localLogs = [];
+    const chunkSize = 5;
+    
+    for (let i = 0; i < previewBatch.length; i += chunkSize) {
+      const chunk = previewBatch.slice(i, i + chunkSize);
+      setProcessingStatus(`Publishing payslips (${i + 1} to ${Math.min(i + chunkSize, previewBatch.length)} of ${previewBatch.length})...`);
+      
+      const chunkResults = await Promise.all(chunk.map(async (entry) => {
+        const emailStatus = entry.staff.send_email && entry.staff.email ? 'PDF Ready' : 'Not Sent';
 
-      try {
-        const response = await fetch('/api/delivery-logs', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            staff_id: entry.staff.id,
-            date_sent: entry.dateSent,
-            whatsapp_status: 'Published',
-            email_status: emailStatus,
-            payslip_data: entry.payslip,
-          }),
-        });
+        try {
+          const response = await fetch('/api/delivery-logs', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              staff_id: entry.staff.id,
+              date_sent: entry.dateSent,
+              whatsapp_status: 'Published',
+              email_status: emailStatus,
+              payslip_data: entry.payslip,
+            }),
+          });
 
-        const result = await response.json();
+          if (!response.ok) {
+            throw new Error(`HTTP error ${response.status}`);
+          }
 
-        return {
-          id: result.id || entry.id,
-          staffId: entry.staff.id,
-          staffName: entry.staff.name,
-          phone: entry.staff.phone,
-          email: entry.staff.email,
-          dateSent: entry.dateSent,
-          whatsappStatus: 'Published',
-          emailStatus,
-          staffData: entry.staff,
-        };
-      } catch (error) {
-        console.error('Error publishing payslip:', error);
-        return {
-          id: entry.id,
-          staffId: entry.staff.id,
-          staffName: entry.staff.name,
-          phone: entry.staff.phone,
-          email: entry.staff.email,
-          dateSent: entry.dateSent,
-          whatsappStatus: 'Failed',
-          emailStatus,
-          staffData: entry.staff,
-        };
-      }
-    }));
+          const result = await response.json();
+
+          return {
+            id: result.id || entry.id,
+            staffId: entry.staff.id,
+            staffName: entry.staff.name,
+            phone: entry.staff.phone,
+            email: entry.staff.email,
+            dateSent: entry.dateSent,
+            whatsappStatus: 'Published',
+            emailStatus,
+            staffData: entry.staff,
+          };
+        } catch (error) {
+          console.error('Error publishing payslip:', error);
+          return {
+            id: entry.id,
+            staffId: entry.staff.id,
+            staffName: entry.staff.name,
+            phone: entry.staff.phone,
+            email: entry.staff.email,
+            dateSent: entry.dateSent,
+            whatsappStatus: 'Failed',
+            emailStatus,
+            staffData: entry.staff,
+          };
+        }
+      }));
+
+      localLogs.push(...chunkResults);
+    }
 
     const sentCount = localLogs.filter((entry) => entry.whatsappStatus === 'Published').length;
     const failedCount = localLogs.filter((entry) => entry.whatsappStatus === 'Failed').length;
