@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-
+import "./globals.css";
 export const metadata: Metadata = {
   title: "Last Resort Detective Agency Limited",
   description: "Payroll and Staff Management System",
