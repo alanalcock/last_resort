@@ -1,6 +1,26 @@
 import React from 'react';
 import { Plus, Pencil, X, User, Hash, Phone, Save } from 'lucide-react';
 
+const JOB_ROLE_OPTIONS = [
+  'Administrative Staff',
+  'Office Administrator',
+  'HR Administrator',
+  'Payroll Administrator',
+  'Operations Administrator',
+  'Accounts Administrator',
+  'Executive Assistant',
+  'Armed Guard',
+  'Unarmed Guard',
+  'Caretaker',
+];
+
+const INSURANCE_OPTIONS = [
+  'Sagicor Life',
+  'Guardian Life',
+  'Canopy Insurance',
+  'Medecus',
+];
+
 interface StaffEditModalProps {
   editingStaff: any;
   setEditingStaff: (val: any) => void;
@@ -21,7 +41,7 @@ export const StaffEditModal: React.FC<StaffEditModalProps> = ({
         onClick={() => setEditingStaff(null)}
       />
       <div className="relative w-full max-w-lg bg-white rounded-xl shadow-2xl shadow-slate-900/20 overflow-hidden animate-in zoom-in-95 slide-in-from-bottom-8 duration-300 max-h-[92vh] flex flex-col">
-        <form onSubmit={handleStaffSubmit} className="flex flex-col">
+        <form onSubmit={handleStaffSubmit} className="flex flex-col min-h-0 overflow-hidden">
           {/* Modal Header */}
           <div className="p-4 sm:p-6 border-b border-slate-100 flex items-start sm:items-center justify-between gap-3 bg-slate-50/50">
             <div className="flex min-w-0 items-start sm:items-center gap-3">
@@ -47,7 +67,7 @@ export const StaffEditModal: React.FC<StaffEditModalProps> = ({
           </div>
 
           {/* Modal Body */}
-          <div className="p-4 sm:p-8 space-y-6 overflow-y-auto">
+          <div className="p-4 sm:p-8 space-y-6 flex-1 overflow-y-auto">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
               <div className="space-y-2">
                 <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Full Name</label>
@@ -117,6 +137,115 @@ export const StaffEditModal: React.FC<StaffEditModalProps> = ({
                   defaultValue={editingStaff.phone}
                   className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
                 />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Date of Birth</label>
+              <input 
+                type="date" 
+                name="dob"
+                defaultValue={editingStaff.dob || ''}
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Home Address</label>
+              <textarea 
+                name="home_address"
+                rows={3}
+                defaultValue={editingStaff.home_address || ''}
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium resize-none"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Date of Employment</label>
+                <input 
+                  type="date" 
+                  name="employment_date"
+                  defaultValue={editingStaff.employment_date || ''}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Job Role</label>
+                <select
+                  name="job_role"
+                  defaultValue={editingStaff.job_role || ''}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+                >
+                  <option value="">Select job role</option>
+                  {JOB_ROLE_OPTIONS.map((role) => (
+                    <option key={role} value={role}>
+                      {role}
+                    </option>
+                  ))}
+                  {editingStaff.job_role && !JOB_ROLE_OPTIONS.includes(editingStaff.job_role) && (
+                    <option value={editingStaff.job_role}>{editingStaff.job_role}</option>
+                  )}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Insurance</label>
+                <select
+                  name="insurance"
+                  defaultValue={editingStaff.insurance || ''}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+                >
+                  <option value="">Select insurance provider</option>
+                  {INSURANCE_OPTIONS.map((provider) => (
+                    <option key={provider} value={provider}>
+                      {provider}
+                    </option>
+                  ))}
+                  {editingStaff.insurance && !INSURANCE_OPTIONS.includes(editingStaff.insurance) && (
+                    <option value={editingStaff.insurance}>{editingStaff.insurance}</option>
+                  )}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Insurance Expiry</label>
+                <input 
+                  type="date" 
+                  name="insurance_expiry"
+                  defaultValue={editingStaff.insurance_expiry || ''}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">PSRA Expiry</label>
+                <input 
+                  type="date" 
+                  name="psra_expiry"
+                  defaultValue={editingStaff.psra_expiry || ''}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      e.currentTarget.form?.requestSubmit();
+                    }
+                  }}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Status</label>
+                <select
+                  name="status"
+                  defaultValue={editingStaff.status || 'Employeed'}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+                >
+                  <option value="Employeed">Employeed</option>
+                  <option value="Unemployees">Unemployees</option>
+                  <option value="Leave of Absence">Leave of Absence</option>
+                </select>
               </div>
             </div>
           </div>

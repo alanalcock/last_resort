@@ -1,11 +1,15 @@
 'use client';
 
-import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useDashboardData } from '@/hooks/useDashboardData';
 import { parsePayrollFile, type ParsedPayslipRecord } from '@/lib/fileParser';
+import { buildPayrollPreview } from '@/lib/payroll/preview';
+import { DEFAULT_ADMINS, formatPayslipCell } from '@/lib/payroll/utils';
 import { handleDownloadPDF } from '@/lib/pdfGenerator';
 import { AdminOptionsPanel } from '@/components/admin/AdminOptionsPanel';
-import { StaffProfileModal } from '@/components/staff/StaffProfileModal';
 import { StaffEditModal } from '@/components/staff/StaffEditModal';
+import type { AdminRecord, PreviewBatchEntry, StaffRecord, UnmatchedPayslipEntry } from '@/types/payroll';
 import { 
   CloudUpload, 
   FileText, 
@@ -22,49 +26,14 @@ import {
   Download,
 } from 'lucide-react';
 
-const normalizeTrn = (value: unknown) => {
-  return String(value ?? '').replace(/\D/g, '');
-};
-
-const formatPayslipCell = (
-  value: string | number | null | undefined,
-  rowIndex: number,
-  colIndex: number,
-  payslip?: ParsedPayslipRecord,
-) => {
-  if (value === null || value === undefined || value === '') {
-    return '';
-  }
-
-  if (rowIndex === 2 && colIndex === 6 && payslip?.payDate) {
-    return payslip.payDate;
-  }
-
-  if (typeof value === 'number') {
-    return value.toLocaleString('en-US', {
-      minimumFractionDigits: Number.isInteger(value) ? 0 : 2,
-      maximumFractionDigits: 2,
-    });
-  }
-
-  return value;
-};
+const tabs = [
+  { id: 'payroll', label: 'Upload Payroll', icon: CreditCard },
+  { id: 'staff', label: 'All Staff', icon: Users },
+  { id: 'options', label: 'Options', icon: Settings },
+];
 
 export default function Home() {
-  type PreviewBatchEntry = {
-    id: string;
-    staff: any;
-    payslip: ParsedPayslipRecord;
-    dateSent: string;
-    sendWhatsApp: boolean;
-    isUpdate?: boolean;
-    diffs?: string[];
-  };
-
-  type UnmatchedPayslipEntry = {
-    id: string;
-    payslip: ParsedPayslipRecord;
-  };
+  const router = useRouter();
 
   const [activeTab, setActiveTab] = useState('payroll');
   const [searchTerm, setSearchTerm] = useState('');
@@ -72,92 +41,26 @@ export default function Home() {
   const [statusFilter, setStatusFilter] = useState('All');
 
   // Admin Management State
-  const [admins, setAdmins] = useState<any[]>([
-    { id: 'default', username: 'admin', password: 'admin', name: 'Default Admin', role: 'System Owner', isDefault: true }
-  ]);
+  const [admins, setAdmins] = useState<AdminRecord[]>(DEFAULT_ADMINS);
   const [isAddingAdmin, setIsAddingAdmin] = useState(false);
 
   // Staff Editing State
-  const [editingStaff, setEditingStaff] = useState<any | null>(null);
+  const [editingStaff, setEditingStaff] = useState<StaffRecord | any | null>(null);
 
   // Application State
-  const [activeStaffDetails, setActiveStaffDetails] = useState<any | null>(null);
-  const [staffList, setStaffList] = useState<any[]>([]);
-  const [deliveryLogs, setDeliveryLogs] = useState<any[]>([]);
   const [currentBroadcastInfo, setCurrentBroadcastInfo] = useState<{filename: string; total: number} | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-
-  // Fetch Data from Local API
-  useEffect(() => {
-    const fetchData = async () => {
-      setIsLoading(true);
-      
-      try {
-        // Authenticate Admin
-        const meRes = await fetch('/api/portal/me');
-        if (!meRes.ok) {
-          window.location.href = '/login';
-          return;
-        }
-        const meData = await meRes.json();
-        if (meData.user?.id !== -1) {
-          window.location.href = '/login';
-          return;
-        }
-
-        // Fetch Staff
-        const staffRes = await fetch('/api/staff');
-        const staffData = await staffRes.json();
-        if (Array.isArray(staffData)) {
-          const mappedStaff = staffData.map(s => ({
-            ...s,
-            joinedDate: s.joined_date,
-          }));
-          setStaffList(mappedStaff);
-        }
-
-        // Fetch Settings
-        const settingsRes = await fetch('/api/settings');
-        const settingsData = await settingsRes.json();
-        if (Array.isArray(settingsData)) {
-          const adminsVal = settingsData.find(s => s.key === 'admins_list')?.value;
-          if (adminsVal) {
-            try {
-              setAdmins(JSON.parse(adminsVal));
-            } catch (e) {
-              console.error('Error parsing admins list:', e);
-            }
-          }
-        }
-
-        // Fetch Logs
-        const logsRes = await fetch('/api/delivery-logs');
-        const logsData = await logsRes.json();
-        if (Array.isArray(logsData)) {
-          const mappedLogs = logsData.map(l => ({
-            id: l.id,
-            staffId: l.staff_id,
-            staffName: l.staff?.name,
-            phone: l.staff?.phone,
-            email: l.staff?.email,
-            dateSent: l.date_sent,
-            whatsappStatus: l.whatsapp_status,
-            emailStatus: l.email_status,
-            staffData: l.staff,
-            payslipData: l.payslip_data
-          }));
-          setDeliveryLogs(mappedLogs);
-        }
-
-      } catch (error) {
-        console.error('Error fetching data:', error);
-      }
-
-      setIsLoading(false);
-    };
-
-    fetchData();
+  const handleUnauthorized = useCallback(() => {
+    window.location.href = '/login';
   }, []);
+  const {
+    admins: loadedAdmins,
+    setAdmins: setLoadedAdmins,
+    staffList,
+    setStaffList,
+    deliveryLogs,
+    setDeliveryLogs,
+    isLoading,
+  } = useDashboardData(handleUnauthorized);
 
   // Processing State
   const [isProcessing, setIsProcessing] = useState(false);
@@ -169,11 +72,9 @@ export default function Home() {
   const [previewBatch, setPreviewBatch] = useState<PreviewBatchEntry[]>([]);
   const [unmatchedPayslips, setUnmatchedPayslips] = useState<UnmatchedPayslipEntry[]>([]);
 
-  const tabs = [
-    { id: 'payroll', label: 'Upload Payroll', icon: CreditCard },
-    { id: 'staff', label: 'All Staff', icon: Users },
-    { id: 'options', label: 'Options', icon: Settings },
-  ];
+  useEffect(() => {
+    setAdmins(loadedAdmins);
+  }, [loadedAdmins]);
 
   const lastDeliveryByStaffId = useMemo(() => {
     const lookup = new Map<number, any>();
@@ -215,8 +116,12 @@ export default function Home() {
     });
   }, [deferredSearchTerm, staffList, statusFilter]);
 
-  const handlePreviewBatchView = async (staff: any, payslip: ParsedPayslipRecord) => {
+  const handlePreviewBatchView = async (staff: StaffRecord, payslip: ParsedPayslipRecord) => {
     setPreviewInvoice({ staffData: staff, payslip });
+  };
+
+  const openStaffProfile = (staffId: number) => {
+    router.push(`/staff/${staffId}`);
   };
 
   const clearPreviewBatch = () => {
@@ -313,10 +218,17 @@ export default function Home() {
       trn: formData.get('trn') as string,
       nis_number: formData.get('nis_number') as string,
       employee_id: formData.get('employee_id') as string,
+      dob: formData.get('dob') as string,
+      home_address: formData.get('home_address') as string,
+      employment_date: formData.get('employment_date') as string,
+      insurance: formData.get('insurance') as string,
+      insurance_expiry: formData.get('insurance_expiry') as string,
+      psra: formData.get('psra') as string,
+      psra_expiry: formData.get('psra_expiry') as string,
+      job_role: formData.get('job_role') as string,
       email: editingStaff?.email || null,
       phone: formData.get('phone') as string,
-      status: editingStaff?.status || 'Active',
-      joined_date: editingStaff?.joinedDate || new Date().toISOString().split('T')[0],
+      status: (formData.get('status') as string) || editingStaff?.status || 'Employeed',
       send_whatsapp: editingStaff?.send_whatsapp ?? (!!(formData.get('phone') as string)?.trim()),
       send_email: false
     };
@@ -330,7 +242,7 @@ export default function Home() {
       const data = await res.json();
       
       if (res.ok && data) {
-        setStaffList([{ ...data, joinedDate: data.joined_date }, ...staffList]);
+        setStaffList((prev) => [{ ...data, dob: data.dob }, ...prev]);
       } else {
         console.error('Error adding staff');
       }
@@ -342,7 +254,7 @@ export default function Home() {
       });
       
       if (res.ok) {
-        setStaffList(staffList.map(s => s.id === editingStaff.id ? { ...s, ...newStaffData, joinedDate: newStaffData.joined_date } : s));
+        setStaffList((prev) => prev.map((staff) => (staff.id === editingStaff.id ? { ...staff, ...newStaffData } : staff)));
       } else {
         console.error('Error updating staff');
       }
@@ -360,26 +272,55 @@ export default function Home() {
     if (!res.ok) console.error(`Error saving ${key}`);
   };
 
-  const handlePromoteStaffToAdmin = async (staffId: number, name: string, username: string) => {
-    if (admins.some(a => !a.isDefault && String(a.staffId) === String(staffId))) {
-      alert('This staff member already has admin privileges.');
+  const handlePromoteStaffToAdmin = async (name: string, username: string) => {
+    const cleanUsername = username.trim().toLowerCase();
+    if (admins.some(a => String(a.username || '').toLowerCase() === cleanUsername)) {
+      alert('This administrator username is already in use. Please select a unique username.');
       return;
     }
 
-    const newAdmin = {
-      id: Date.now().toString(),
-      staffId: staffId.toString(),
-      name: name,
-      username: username.toLowerCase(),
-      role: 'Administrator',
-      isDefault: false
-    };
+    try {
+      // 1. Create a brand new active Staff record in the database for the new admin, with password set to null (triggers initial default password flow)
+      const res = await fetch('/api/staff', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          status: 'Employeed',
+          job_role: 'Administrator',
+          password: null
+        }),
+      });
 
-    const updatedAdmins = [...admins, newAdmin];
-    setAdmins(updatedAdmins);
-    await saveSetting('admins_list', JSON.stringify(updatedAdmins));
-    alert(`${name} has been promoted to Admin successfully! They can access the admin panel using their standard employee login credentials.`);
-    setIsAddingAdmin(false);
+      if (!res.ok) {
+        throw new Error('Failed to create database record for new administrator.');
+      }
+
+      const newStaff = await res.json();
+      
+      // Update local staff list state so it lists the new staff member
+      setStaffList(prev => [newStaff, ...prev]);
+
+      // 2. Create the admin configuration entry
+      const newAdmin = {
+        id: Date.now().toString(),
+        staffId: newStaff.id.toString(),
+        name: name.trim(),
+        username: cleanUsername,
+        role: 'Administrator',
+        isDefault: false
+      };
+
+      const updatedAdmins = [...admins, newAdmin];
+      setAdmins(updatedAdmins);
+      setLoadedAdmins(updatedAdmins);
+      await saveSetting('admins_list', JSON.stringify(updatedAdmins));
+      alert(`${name.trim()} has been added as an Administrator successfully!\n\nThey can log in using their username "${cleanUsername}" and default password "admin", and will be prompted to choose a new secure password on their first login.`);
+      setIsAddingAdmin(false);
+    } catch (error) {
+      console.error('Error adding new admin:', error);
+      alert('An error occurred while adding the administrator. Please try again.');
+    }
   };
 
   const handleRemoveAdmin = async (adminId: string) => {
@@ -394,6 +335,7 @@ export default function Home() {
     try {
       const updatedAdmins = admins.filter(a => a.id !== adminId && String(a.staffId) !== String(adminId));
       setAdmins(updatedAdmins);
+      setLoadedAdmins(updatedAdmins);
       await saveSetting('admins_list', JSON.stringify(updatedAdmins));
       alert('Admin access has been successfully revoked.');
     } catch (e) {
@@ -404,25 +346,8 @@ export default function Home() {
 
   const handleResetAdminPassword = async (admin: any) => {
     if (admin.isDefault) {
-      if (!confirm('⚠️ WARNING: This will immediately invalidate the current Default Admin password and set it back to the default "admin". The System Owner will be forced to select a new secure password upon their next login.\n\nAre you absolutely sure you want to proceed?')) {
-        return;
-      }
-      
-      const updatedAdmins = admins.map(a => {
-        if (a.isDefault) {
-          return { ...a, password: 'admin' };
-        }
-        return a;
-      });
-      
-      try {
-        await saveSetting('admins_list', JSON.stringify(updatedAdmins));
-        setAdmins(updatedAdmins);
-        alert('Default Admin password has been reset to "admin" successfully. They will be prompted to choose a new password on their next login.');
-      } catch (e) {
-        console.error(e);
-        alert('Failed to reset Default Admin password.');
-      }
+      alert('Resetting the password for the Default Developer Admin account is disabled.');
+      return;
     } else {
       if (!confirm(`⚠️ WARNING: This will immediately revoke administrator ${admin.name}'s current secure password and reset it back to the default "admin". They will be forced to choose a new custom secure password on their next login.\n\nAre you absolutely sure you want to proceed?`)) {
         return;
@@ -461,7 +386,7 @@ export default function Home() {
 
       setProcessStats(prev => ({ ...prev, total: parsedData.length }));
       setCurrentBroadcastInfo({ filename: file.name, total: parsedData.length });
-      await processRecords(parsedData);
+      await processRecords(parsedData as ParsedPayslipRecord[]);
 
     } catch (error) {
       console.error('Error processing file:', error);
@@ -470,87 +395,22 @@ export default function Home() {
     }
   };
 
-  const processRecords = async (records: any[]) => {
+  const processRecords = async (records: ParsedPayslipRecord[]) => {
     setProcessingStatus('Mapping records by TRN...');
     const today = new Date().toISOString().split('T')[0];
     const payslipRecords = records.filter((record): record is ParsedPayslipRecord => record?.kind === 'payslip');
-    const staffByTrn = new Map(
-      staffList
-        .map((person) => [normalizeTrn(person.trn), person] as const)
-        .filter(([trn]) => Boolean(trn))
-    );
-    const matchedEntries: Array<{ staff: any; payslip: ParsedPayslipRecord }> = [];
-    const unmatchedEntries: UnmatchedPayslipEntry[] = [];
-
-    payslipRecords.forEach((record, index) => {
-      const staff = staffByTrn.get(normalizeTrn(record.trn));
-      if (!staff) {
-        unmatchedEntries.push({
-          id: `${normalizeTrn(record.trn) || 'missing-trn'}-${index}`,
-          payslip: record,
-        });
-        return;
-      }
-
-      matchedEntries.push({ staff, payslip: record });
+    const { previewEntries, unmatchedEntries, matchedCount, skippedCount } = buildPayrollPreview({
+      records: payslipRecords,
+      staffList,
+      deliveryByStaffDate,
+      today,
     });
 
-    const matchedCount = matchedEntries.length;
     setProcessStats(prev => ({ ...prev, matched: matchedCount }));
 
     setProcessingStatus('Generating payslip previews...');
     clearPreviewBatch();
-    const previewEntries: PreviewBatchEntry[] = [];
-
-    for (let i = 0; i < matchedEntries.length; i++) {
-      const { staff, payslip } = matchedEntries[i];
-      const targetDate = payslip.payDate || today;
-
-      const existingLog = deliveryByStaffDate.get(`${staff.id}-${targetDate}`);
-
-      let isUpdate = false;
-      const diffs: string[] = [];
-
-      if (existingLog) {
-        const oldDataStr = JSON.stringify(existingLog.payslipData || {});
-        const newDataStr = JSON.stringify(payslip);
-
-        if (oldDataStr === newDataStr) {
-          // Exactly identical: skip!
-          setProcessStats(prev => ({ ...prev, sent: prev.sent + 1 }));
-          continue;
-        } else {
-          // Different data: mark as update
-          isUpdate = true;
-          const oldData: any = existingLog.payslipData || {};
-          
-          if (oldData.netPayCurrent !== payslip.netPayCurrent) {
-            diffs.push(`Net Pay changed from $${Number(oldData.netPayCurrent || 0).toFixed(2)} to $${Number(payslip.netPayCurrent || 0).toFixed(2)}`);
-          }
-          if (oldData.totalCurrent !== payslip.totalCurrent) {
-            diffs.push(`Total Earnings changed from $${Number(oldData.totalCurrent || 0).toFixed(2)} to $${Number(payslip.totalCurrent || 0).toFixed(2)}`);
-          }
-          if (oldData.deductionCurrent !== payslip.deductionCurrent) {
-            diffs.push(`Total Deductions changed from $${Number(oldData.deductionCurrent || 0).toFixed(2)} to $${Number(payslip.deductionCurrent || 0).toFixed(2)}`);
-          }
-          if (diffs.length === 0) {
-            diffs.push('Minor breakdown changes detected');
-          }
-        }
-      }
-
-      previewEntries.push({
-        id: isUpdate ? `updated-${staff.id}-${targetDate}` : `${staff.id}-${targetDate}`,
-        staff,
-        payslip,
-        dateSent: targetDate,
-        sendWhatsApp: Boolean(staff.phone && staff.send_whatsapp),
-        isUpdate,
-        diffs,
-      } as PreviewBatchEntry);
-      
-      setProcessStats(prev => ({ ...prev, sent: previewEntries.length }));
-    }
+    setProcessStats(prev => ({ ...prev, sent: previewEntries.length + skippedCount }));
 
     setPreviewBatch(previewEntries);
     setUnmatchedPayslips(unmatchedEntries);
@@ -713,11 +573,12 @@ export default function Home() {
                     className="w-full sm:w-auto flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors outline-none cursor-pointer"
                   >
                     <option value="All">All Status</option>
-                    <option value="Active">Active</option>
-                    <option value="On Leave">On Leave</option>
+                    <option value="Employeed">Employeed</option>
+                    <option value="Unemployees">Unemployees</option>
+                    <option value="Leave of Absence">Leave of Absence</option>
                   </select>
                   <button 
-                    onClick={() => setEditingStaff({ id: 'new', name: '', trn: '', email: '', department: 'Engineering', phone: '' })}
+                    onClick={() => setEditingStaff({ id: 'new', name: '', trn: '', email: '', phone: '', dob: '', home_address: '', employment_date: '', insurance: '', insurance_expiry: '', psra: '', psra_expiry: '', job_role: '' })}
                     className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors shadow-sm"
                   >
                     <Plus className="w-4 h-4" />
@@ -735,7 +596,7 @@ export default function Home() {
                   >
                     <button
                       type="button"
-                      onClick={() => setActiveStaffDetails(person)}
+                      onClick={() => openStaffProfile(person.id)}
                       className="w-full text-left space-y-3"
                     >
                       <div className="flex items-center gap-3">
@@ -809,7 +670,7 @@ export default function Home() {
                     {filteredStaff.map((person) => (
                       <tr key={person.id} className="hover:bg-slate-50/80 transition-colors group cursor-pointer">
                         <td 
-                          onClick={() => setActiveStaffDetails(person)}
+                          onClick={() => openStaffProfile(person.id)}
                           className="px-6 py-4"
                         >
                           <div className="flex items-center gap-3">
@@ -824,25 +685,25 @@ export default function Home() {
                           </div>
                         </td>
                         <td 
-                          onClick={() => setActiveStaffDetails(person)}
+                          onClick={() => openStaffProfile(person.id)}
                           className="px-6 py-4"
                         >
                           <p className="text-sm font-medium text-slate-600 tracking-wider uppercase">{person.trn}</p>
                         </td>
                         <td 
-                          onClick={() => setActiveStaffDetails(person)}
+                          onClick={() => openStaffProfile(person.id)}
                           className="px-6 py-4"
                         >
                           <p className="text-sm font-medium text-slate-600 tracking-wider uppercase">{person.nis_number}</p>
                         </td>
                         <td 
-                          onClick={() => setActiveStaffDetails(person)}
+                          onClick={() => openStaffProfile(person.id)}
                           className="px-6 py-4"
                         >
                           <p className="text-sm font-medium text-slate-600">{person.phone || <span className="text-slate-400 italic">None</span>}</p>
                         </td>
                         <td 
-                          onClick={() => setActiveStaffDetails(person)}
+                          onClick={() => openStaffProfile(person.id)}
                           className="px-6 py-4"
                         >
                           {(() => {
@@ -897,22 +758,12 @@ export default function Home() {
               handlePromoteStaffToAdmin={handlePromoteStaffToAdmin}
               handleRemoveAdmin={handleRemoveAdmin}
               handleResetAdminPassword={handleResetAdminPassword}
-              staffList={staffList}
             />
           )}
 
         </div>
 
       </div>
-
-      {/* Staff Payslips Modal */}
-      <StaffProfileModal
-        activeStaffDetails={activeStaffDetails}
-        setActiveStaffDetails={setActiveStaffDetails}
-        deliveryLogs={deliveryLogs}
-        handlePreviewBatchView={handlePreviewBatchView}
-        handleDownloadPDF={handleDownloadPDF}
-      />
 
       <StaffEditModal
         editingStaff={editingStaff}

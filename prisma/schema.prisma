@@ -12,8 +12,15 @@ model Staff {
   id            Int      @id @default(autoincrement())
   name          String
   email         String?  @unique
-  status        String   @default("Active")
-  joined_date   String?
+  status        String   @default("Employeed")
+  dob           String?  @map("joined_date")
+  home_address  String?
+  employment_date String?
+  insurance     String?
+  insurance_expiry String?
+  psra          String?
+  psra_expiry   String?
+  job_role      String?
   trn           String?  @unique
   phone         String?
   nis_number    String?  @unique
@@ -26,6 +33,7 @@ model Staff {
 
   delivery_logs DeliveryLog[]
   payslips      Payslip[]
+  attendance_logs AttendanceLog[]
 }
 
 model DeliveryLog {
@@ -73,4 +81,18 @@ model Payslip {
   deductions        Json?
   raw_rows          Json?
   created_at        DateTime @default(now())
+}
+
+model AttendanceLog {
+  id         Int      @id @default(autoincrement())
+  staff_id   Int
+  staff      Staff    @relation(fields: [staff_id], references: [id], onDelete: Cascade)
+  date       String
+  status     String
+  present_type String?
+  leave_type String?
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([staff_id, date])
 }
