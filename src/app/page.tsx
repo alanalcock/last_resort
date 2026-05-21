@@ -24,18 +24,19 @@ import {
   X,
   Loader2,
   Download,
+  Undo2,
 } from 'lucide-react';
 
 const tabs = [
-  { id: 'payroll', label: 'Upload Payroll', icon: CreditCard },
   { id: 'staff', label: 'All Staff', icon: Users },
+  { id: 'payroll', label: 'Upload Payroll', icon: CreditCard },
   { id: 'options', label: 'Options', icon: Settings },
 ];
 
 export default function Home() {
   const router = useRouter();
 
-  const [activeTab, setActiveTab] = useState('payroll');
+  const [activeTab, setActiveTab] = useState('staff');
   const [searchTerm, setSearchTerm] = useState('');
   const deferredSearchTerm = useDeferredValue(searchTerm);
   const [statusFilter, setStatusFilter] = useState('All');
@@ -71,6 +72,9 @@ export default function Home() {
   const [previewInvoice, setPreviewInvoice] = useState<{ staffData: any; payslip?: ParsedPayslipRecord } | null>(null);
   const [previewBatch, setPreviewBatch] = useState<PreviewBatchEntry[]>([]);
   const [unmatchedPayslips, setUnmatchedPayslips] = useState<UnmatchedPayslipEntry[]>([]);
+  const [showRetractModal, setShowRetractModal] = useState(false);
+  const [selectedRetractDate, setSelectedRetractDate] = useState('');
+  const [isRetracting, setIsRetracting] = useState(false);
 
   useEffect(() => {
     setAdmins(loadedAdmins);
@@ -116,6 +120,22 @@ export default function Home() {
     });
   }, [deferredSearchTerm, staffList, statusFilter]);
 
+  const retractablePayrollDates = useMemo(() => {
+    const counts = new Map<string, number>();
+
+    deliveryLogs.forEach((log) => {
+      if (!log.dateSent) {
+        return;
+      }
+
+      counts.set(log.dateSent, (counts.get(log.dateSent) || 0) + 1);
+    });
+
+    return Array.from(counts.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([date, count]) => ({ date, count }));
+  }, [deliveryLogs]);
+
   const handlePreviewBatchView = async (staff: StaffRecord, payslip: ParsedPayslipRecord) => {
     setPreviewInvoice({ staffData: staff, payslip });
   };
@@ -129,79 +149,125 @@ export default function Home() {
     setUnmatchedPayslips([]);
   };
 
+  const handleRetractUpload = async () => {
+    if (!selectedRetractDate) {
+      return;
+    }
+
+    setIsRetracting(true);
+
+    try {
+      const response = await fetch('/api/delivery-logs/retract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date_sent: selectedRetractDate }),
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result?.error || 'Failed to retract upload.');
+      }
+
+      setDeliveryLogs((prev) => prev.filter((log) => log.dateSent !== selectedRetractDate));
+      setProcessingStatus(`Retracted ${result.deleted_count} payslip record${result.deleted_count === 1 ? '' : 's'} for ${selectedRetractDate}.`);
+      setShowRetractModal(false);
+      setSelectedRetractDate('');
+    } catch (error) {
+      console.error('Retract upload error:', error);
+      setProcessingStatus('Failed to retract selected upload.');
+    } finally {
+      setIsRetracting(false);
+    }
+  };
+
   const confirmPreviewBatch = async () => {
     setIsProcessing(true);
     setProcessingStatus('Publishing payslips to employee portal...');
+    let localLogs = [];
+    let sentCount = 0;
+    let failedCount = 0;
 
-    const localLogs = [];
-    const chunkSize = 5;
-    
-    for (let i = 0; i < previewBatch.length; i += chunkSize) {
-      const chunk = previewBatch.slice(i, i + chunkSize);
-      setProcessingStatus(`Publishing payslips (${i + 1} to ${Math.min(i + chunkSize, previewBatch.length)} of ${previewBatch.length})...`);
-      
-      const chunkResults = await Promise.all(chunk.map(async (entry) => {
-        const emailStatus = entry.staff.send_email && entry.staff.email ? 'PDF Ready' : 'Not Sent';
-
-        try {
-          const response = await fetch('/api/delivery-logs', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              staff_id: entry.staff.id,
-              date_sent: entry.dateSent,
-              whatsapp_status: 'Published',
-              email_status: emailStatus,
-              payslip_data: entry.payslip,
-            }),
-          });
-
-          if (!response.ok) {
-            throw new Error(`HTTP error ${response.status}`);
-          }
-
-          const result = await response.json();
-
-          return {
-            id: result.id || entry.id,
-            staffId: entry.staff.id,
-            staffName: entry.staff.name,
-            phone: entry.staff.phone,
-            email: entry.staff.email,
-            dateSent: entry.dateSent,
-            whatsappStatus: 'Published',
-            emailStatus,
-            staffData: entry.staff,
-          };
-        } catch (error) {
-          console.error('Error publishing payslip:', error);
-          return {
+    try {
+      const response = await fetch('/api/delivery-logs/batch', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          items: previewBatch.map((entry) => ({
             id: entry.id,
-            staffId: entry.staff.id,
-            staffName: entry.staff.name,
-            phone: entry.staff.phone,
-            email: entry.staff.email,
-            dateSent: entry.dateSent,
-            whatsappStatus: 'Failed',
-            emailStatus,
-            staffData: entry.staff,
-          };
-        }
+            staff_id: entry.staff.id,
+            date_sent: entry.dateSent,
+            whatsapp_status: 'Published',
+            email_status: entry.staff.send_email && entry.staff.email ? 'PDF Ready' : 'Not Sent',
+            payslip_data: entry.payslip,
+          })),
+        }),
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result?.error || 'Failed to publish payslip batch.');
+      }
+
+      localLogs = [
+        ...(Array.isArray(result?.saved)
+          ? result.saved.map((log: any) => ({
+              id: log.id,
+              staffId: log.staff_id,
+              staffName: log.staff?.name,
+              phone: log.staff?.phone,
+              email: log.staff?.email,
+              dateSent: log.date_sent,
+              whatsappStatus: log.whatsapp_status,
+              emailStatus: log.email_status,
+              staffData: log.staff,
+              payslipData: log.payslip_data,
+            }))
+          : []),
+        ...(Array.isArray(result?.failed)
+          ? result.failed.map((failure: any) => {
+              const entry = previewBatch.find((item) => item.id === failure.id);
+              const emailStatus = entry?.staff.send_email && entry?.staff.email ? 'PDF Ready' : 'Not Sent';
+
+              return {
+                id: failure.id,
+                staffId: entry?.staff.id ?? failure.staff_id ?? null,
+                staffName: entry?.staff.name ?? null,
+                phone: entry?.staff.phone ?? null,
+                email: entry?.staff.email ?? null,
+                dateSent: entry?.dateSent ?? failure.date_sent ?? null,
+                whatsappStatus: 'Failed',
+                emailStatus,
+                staffData: entry?.staff ?? null,
+              };
+            })
+          : []),
+      ];
+
+      sentCount = Array.isArray(result?.saved) ? result.saved.length : 0;
+      failedCount = Array.isArray(result?.failed) ? result.failed.length : 0;
+    } catch (error) {
+      console.error('Batch publishing error:', error);
+      localLogs = previewBatch.map((entry) => ({
+        id: entry.id,
+        staffId: entry.staff.id,
+        staffName: entry.staff.name,
+        phone: entry.staff.phone,
+        email: entry.staff.email,
+        dateSent: entry.dateSent,
+        whatsappStatus: 'Failed',
+        emailStatus: entry.staff.send_email && entry.staff.email ? 'PDF Ready' : 'Not Sent',
+        staffData: entry.staff,
       }));
-
-      localLogs.push(...chunkResults);
+      failedCount = localLogs.length;
     }
-
-    const sentCount = localLogs.filter((entry) => entry.whatsappStatus === 'Published').length;
-    const failedCount = localLogs.filter((entry) => entry.whatsappStatus === 'Failed').length;
 
     if (currentBroadcastInfo) {
       const newRun = {
         filename: currentBroadcastInfo.filename,
         total_records: currentBroadcastInfo.total,
-        matched_records: localLogs.length,
+        matched_records: previewBatch.length,
         sent_records: sentCount,
       };
       
@@ -213,7 +279,16 @@ export default function Home() {
       setCurrentBroadcastInfo(null);
     }
 
-    setDeliveryLogs(localLogs);
+    setDeliveryLogs((prev) => {
+      const untouched = prev.filter(
+        (existing) =>
+          !localLogs.some(
+            (nextLog) => nextLog.staffId === existing.staffId && nextLog.dateSent === existing.dateSent,
+          ),
+      );
+
+      return [...localLogs, ...untouched];
+    });
     setActiveTab('staff');
     setProcessStats(prev => ({ ...prev, sent: sentCount }));
     setProcessingStatus(unmatchedPayslips.length > 0
@@ -549,10 +624,22 @@ export default function Home() {
                   </div>
                 )}
                 
-                <div className="flex w-full items-center gap-4 mt-8">
+                <div className="flex w-full flex-col sm:flex-row items-stretch sm:items-center gap-4 mt-8">
                   <button className="flex w-full sm:w-auto items-center justify-center gap-2 px-6 sm:px-8 py-3.5 sm:py-4 bg-slate-900 text-white rounded-lg font-semibold shadow-lg shadow-slate-900/10 hover:bg-slate-800 hover:shadow-xl transition-all active:scale-95">
                     <Plus className="w-5 h-5" />
                     New Entry
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedRetractDate(retractablePayrollDates[0]?.date || '');
+                      setShowRetractModal(true);
+                    }}
+                    disabled={retractablePayrollDates.length === 0}
+                    className="flex w-full sm:w-auto items-center justify-center gap-2 px-6 sm:px-8 py-3.5 sm:py-4 bg-white text-slate-900 rounded-lg font-semibold border border-slate-200 shadow-sm hover:bg-slate-50 transition-all active:scale-95 disabled:cursor-not-allowed disabled:text-slate-300 disabled:bg-slate-50"
+                  >
+                    <Undo2 className="w-5 h-5" />
+                    Retract Upload
                   </button>
                 </div>
               </div>
@@ -1040,6 +1127,100 @@ export default function Home() {
                   {isProcessing ? 'Publishing...' : 'Confirm and Publish'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRetractModal && (
+        <div className="fixed inset-0 z-[115] flex items-center justify-center p-3 sm:p-4">
+          <div
+            className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+            onClick={() => {
+              if (!isRetracting) {
+                setShowRetractModal(false);
+              }
+            }}
+          />
+          <div className="relative w-full max-w-lg rounded-xl bg-white shadow-2xl overflow-hidden">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 bg-slate-50 p-4 sm:items-center">
+              <div className="flex min-w-0 items-start gap-3 sm:items-center">
+                <div className="w-10 h-10 rounded-lg bg-slate-900 flex items-center justify-center text-white">
+                  <Undo2 className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-base sm:text-lg font-bold text-slate-900">Retract Uploaded Payroll</h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Select a saved pay date to retract from the portal.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!isRetracting) {
+                    setShowRetractModal(false);
+                  }
+                }}
+                className="p-2 text-slate-400 hover:text-slate-900 hover:bg-slate-200 rounded-lg transition-all"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 sm:p-5 space-y-4">
+              {retractablePayrollDates.length === 0 ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">
+                  No uploaded payroll dates are available to retract.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-0.5">
+                    Uploaded Pay Dates
+                  </label>
+                  <select
+                    value={selectedRetractDate}
+                    onChange={(e) => setSelectedRetractDate(e.target.value)}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all"
+                  >
+                    <option value="">Select a pay date</option>
+                    {retractablePayrollDates.map((entry) => (
+                      <option key={entry.date} value={entry.date}>
+                        {entry.date} ({entry.count} record{entry.count === 1 ? '' : 's'})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 sm:p-5 border-t border-slate-100 bg-white flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowRetractModal(false)}
+                className="w-full sm:w-auto px-5 py-2.5 text-sm font-semibold text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-all"
+                disabled={isRetracting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleRetractUpload}
+                disabled={!selectedRetractDate || isRetracting}
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-all shadow-md shadow-slate-900/20 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+              >
+                {isRetracting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Retracting...
+                  </>
+                ) : (
+                  <>
+                    <Undo2 className="w-4 h-4" />
+                    Retract Selected
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>

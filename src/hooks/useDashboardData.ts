@@ -17,25 +17,47 @@ export function useDashboardData(onUnauthorized: () => void) {
       setIsLoading(true);
 
       try {
-        const response = await fetch('/api/dashboard/bootstrap', { cache: 'no-store' });
-
-        if (response.status === 401 || response.status === 403) {
+        const meResponse = await fetch('/api/portal/me', { cache: 'no-store' });
+        if (meResponse.status === 401 || meResponse.status === 403) {
           onUnauthorized();
           return;
         }
 
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data?.error || 'Unable to load dashboard.');
+        const meData = await meResponse.json();
+        if (!meResponse.ok || meData?.user?.isAdmin !== true) {
+          onUnauthorized();
+          return;
+        }
+
+        const [staffResponse, settingsResponse, deliveryLogsResponse] = await Promise.all([
+          fetch('/api/staff', { cache: 'no-store' }),
+          fetch('/api/settings', { cache: 'no-store' }),
+          fetch('/api/delivery-logs', { cache: 'no-store' }),
+        ]);
+
+        const [staffData, settingsData, deliveryLogsData] = await Promise.all([
+          staffResponse.json(),
+          settingsResponse.json(),
+          deliveryLogsResponse.json(),
+        ]);
+
+        if (!staffResponse.ok) {
+          throw new Error(staffData?.error || 'Unable to load staff.');
+        }
+        if (!settingsResponse.ok) {
+          throw new Error(settingsData?.error || 'Unable to load settings.');
+        }
+        if (!deliveryLogsResponse.ok) {
+          throw new Error(deliveryLogsData?.error || 'Unable to load delivery logs.');
         }
 
         if (!isMounted) {
           return;
         }
 
-        setStaffList(Array.isArray(data.staff) ? data.staff.map(mapStaffRecord) : []);
-        setDeliveryLogs(Array.isArray(data.deliveryLogs) ? data.deliveryLogs.map(mapDeliveryLogRecord) : []);
-        setAdmins(parseAdminsSetting(data.settings));
+        setStaffList(Array.isArray(staffData) ? staffData.map(mapStaffRecord) : []);
+        setDeliveryLogs(Array.isArray(deliveryLogsData) ? deliveryLogsData.map(mapDeliveryLogRecord) : []);
+        setAdmins(parseAdminsSetting(settingsData));
       } catch (error) {
         console.error('Dashboard bootstrap error:', error);
       } finally {
@@ -62,4 +84,3 @@ export function useDashboardData(onUnauthorized: () => void) {
     isLoading,
   };
 }
-
