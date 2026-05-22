@@ -28,7 +28,11 @@ export async function POST(req: Request) {
 
       // Fetch all active staff
       const allStaff = await prisma.staff.findMany({
-        where: { status: 'Employeed' }
+        where: {
+          status: {
+            notIn: ['Resigned', 'Terminated']
+          }
+        }
       });
 
       const staff = allStaff.find(s => {
