@@ -2,7 +2,7 @@ import React from 'react';
 import { Shield, Key, User, Plus, X } from 'lucide-react';
 
 interface Admin {
-  id: string;
+  id: string | number;
   staffId?: string;
   name: string;
   username: string;
@@ -16,7 +16,7 @@ interface AdminOptionsPanelProps {
   isAddingAdmin: boolean;
   setIsAddingAdmin: (val: boolean) => void;
   handlePromoteStaffToAdmin: (name: string, username: string) => Promise<void>;
-  handleRemoveAdmin: (adminId: string) => Promise<void>;
+  handleRemoveAdmin: (adminId: string | number) => Promise<void>;
   handleResetAdminPassword: (admin: Admin) => Promise<void>;
 }
 

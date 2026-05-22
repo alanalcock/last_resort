@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { createSession } from '@/lib/auth';
+import { ensureDefaultAdmin, hashPassword, verifyStoredPassword } from '@/lib/admins';
 import { cookies } from 'next/headers';
 
 export async function POST(req: Request) {
@@ -10,6 +11,7 @@ export async function POST(req: Request) {
 
 
     const { action } = body;
+    const adminDelegate = (prisma as any).admin ?? null;
 
     // 2. EMPLOYEE NAME & TRN VERIFICATION
     if (action === 'employee_verify') {
@@ -79,6 +81,49 @@ export async function POST(req: Request) {
 
       if (!cleanInputName || !password) {
         return NextResponse.json({ error: 'Administrator Username and password are required.' }, { status: 400 });
+      }
+
+      if (adminDelegate) {
+        await ensureDefaultAdmin();
+        const defaultAdminAlias = cleanInputName === 'defaultadmin' ? 'admin' : cleanInputName;
+        const admin = await adminDelegate.findUnique({
+          where: { username: defaultAdminAlias },
+        });
+
+        if (!admin) {
+          return NextResponse.json({ error: 'Invalid administrator username.' }, { status: 401 });
+        }
+
+        const currentAdminPass = admin.password || 'admin';
+        const isUsingDefaultPassword = currentAdminPass === 'admin';
+        const isValidPassword = isUsingDefaultPassword
+          ? password === 'admin'
+          : await verifyStoredPassword(password, currentAdminPass);
+
+        if (!isValidPassword) {
+          return NextResponse.json({ error: 'Invalid administrator password. Please try again.' }, { status: 401 });
+        }
+
+        if (isUsingDefaultPassword) {
+          return NextResponse.json({
+            success: true,
+            needsNewPassword: true,
+            adminType: admin.is_default ? 'default' : 'promoted',
+            username: admin.name,
+            staffId: admin.id,
+          });
+        }
+
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        (await cookies()).set('session', `admin-session-${admin.id}`, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          expires: expiresAt,
+          sameSite: 'lax',
+          path: '/',
+        });
+
+        return NextResponse.json({ success: true, needsNewPassword: false, isAdmin: true });
       }
 
       const adminSetting = await prisma.setting.findUnique({
@@ -166,13 +211,7 @@ export async function POST(req: Request) {
         }
       }
 
-      // Validate custom password
-      const encoder = new TextEncoder();
-      const data = encoder.encode(password);
-      const hash = await crypto.subtle.digest('SHA-256', data);
-      const hashedPassword = Array.from(new Uint8Array(hash))
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join('');
+      const hashedPassword = await hashPassword(password);
 
       if (staffMember.password !== password && staffMember.password !== hashedPassword) {
         return NextResponse.json({ error: 'Invalid administrator password.' }, { status: 401 });
@@ -198,6 +237,30 @@ export async function POST(req: Request) {
 
       if (!cleanInputName || !newPassword) {
         return NextResponse.json({ error: 'Username and new password are required.' }, { status: 400 });
+      }
+
+      if (adminDelegate) {
+        const adminId = Number(staffId);
+        if (!Number.isFinite(adminId)) {
+          return NextResponse.json({ error: 'Administrator id is required.' }, { status: 400 });
+        }
+
+        const hashedPassword = await hashPassword(newPassword);
+        await adminDelegate.update({
+          where: { id: adminId },
+          data: { password: hashedPassword },
+        });
+
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        (await cookies()).set('session', `admin-session-${adminId}`, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          expires: expiresAt,
+          sameSite: 'lax',
+          path: '/',
+        });
+
+        return NextResponse.json({ success: true });
       }
 
       const adminSetting = await prisma.setting.findUnique({
@@ -249,12 +312,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Promoted admin staff ID is required.' }, { status: 400 });
       }
 
-      const encoder = new TextEncoder();
-      const data = encoder.encode(newPassword);
-      const hash = await crypto.subtle.digest('SHA-256', data);
-      const hashedPassword = Array.from(new Uint8Array(hash))
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join('');
+      const hashedPassword = await hashPassword(newPassword);
 
       await prisma.staff.update({
         where: { id: Number(staffId) },

@@ -1,6 +1,7 @@
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 generator client {
@@ -34,6 +35,17 @@ model Staff {
   delivery_logs DeliveryLog[]
   payslips      Payslip[]
   attendance_logs AttendanceLog[]
+}
+
+model Admin {
+  id         Int      @id @default(autoincrement())
+  name       String
+  username   String   @unique
+  password   String?
+  role       String   @default("Administrator")
+  is_default Boolean  @default(false)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 }
 
 model DeliveryLog {

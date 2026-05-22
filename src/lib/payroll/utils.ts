@@ -14,6 +14,65 @@ export const DEFAULT_ADMINS: AdminRecord[] = [
 
 export const normalizeTrn = (value: unknown) => String(value ?? '').replace(/\D/g, '');
 
+export const formatDayFirstDate = (value: string | null | undefined) => {
+  if (!value) {
+    return 'None';
+  }
+
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    return `${day}/${month}/${year}`;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(parsed);
+};
+
+export const formatEditableDayFirstDate = (value: string | null | undefined) => {
+  if (!value) {
+    return '';
+  }
+
+  return formatDayFirstDate(value);
+};
+
+export const formatNameLastFirst = (fullName: string | null | undefined): string => {
+  if (!fullName) return '';
+  const parts = fullName.trim().split(' ');
+  if (parts.length <= 1) return fullName;
+  const last = parts.pop();
+  return `${last}, ${parts.join(' ')}`;
+};
+
+export const normalizeDateInputToIso = (value: FormDataEntryValue | null) => {
+  const raw = String(value ?? '').trim();
+  if (!raw) {
+    return '';
+  }
+
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (isoMatch) {
+    return raw;
+  }
+
+  const dayFirstMatch = /^(\d{2})[\/\-](\d{2})[\/\-](\d{4})$/.exec(raw);
+  if (dayFirstMatch) {
+    const [, day, month, year] = dayFirstMatch;
+    return `${year}-${month}-${day}`;
+  }
+
+  return raw;
+};
+
 export const formatPayslipCell = (
   value: string | number | null | undefined,
   rowIndex: number,
@@ -54,7 +113,7 @@ export const mapStaffRecord = (staff: Partial<StaffRecord>): StaffRecord => ({
   job_role: staff.job_role || null,
   email: staff.email || null,
   phone: staff.phone || null,
-  status: staff.status || 'Employeed',
+  status: staff.status || 'Full-Time',
   password: staff.password || null,
   send_whatsapp: staff.send_whatsapp ?? null,
   send_email: staff.send_email ?? null,
@@ -92,3 +151,12 @@ export const parseAdminsSetting = (settings: Array<{ key?: string; value?: strin
     return DEFAULT_ADMINS;
   }
 };
+
+export const mapAdminRecord = (admin: any): AdminRecord => ({
+  id: admin.id,
+  username: admin.username || '',
+  password: admin.password || undefined,
+  name: admin.name || '',
+  role: admin.role || 'Administrator',
+  isDefault: Boolean(admin.is_default ?? admin.isDefault),
+});

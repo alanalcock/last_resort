@@ -1,5 +1,6 @@
 import React from 'react';
-import { Plus, Pencil, X, User, Hash, Phone, Save } from 'lucide-react';
+import { Plus, Pencil, X, User, Hash, Phone, Save, Trash2 } from 'lucide-react';
+import { formatEditableDayFirstDate } from '@/lib/payroll/utils';
 
 const JOB_ROLE_OPTIONS = [
   'Administrative Staff',
@@ -9,6 +10,8 @@ const JOB_ROLE_OPTIONS = [
   'Operations Administrator',
   'Accounts Administrator',
   'Executive Assistant',
+  'Dispatcher',
+  'Receptionist',
   'Armed Guard',
   'Unarmed Guard',
   'Caretaker',
@@ -21,16 +24,78 @@ const INSURANCE_OPTIONS = [
   'Medecus',
 ];
 
+const normalizeInsuranceCoverage = (value: string | null | undefined) => {
+  if (!value) return '';
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'no') return 'No';
+  return 'Yes';
+};
+
 interface StaffEditModalProps {
   editingStaff: any;
   setEditingStaff: (val: any) => void;
   handleStaffSubmit: (e: React.FormEvent) => void;
+  handleRemoveStaff?: () => void;
+  isRemovingStaff?: boolean;
 }
+
+const ThreeFieldDateInput = ({ name, defaultValue }: { name: string; defaultValue?: string }) => {
+  const [day, setDay] = React.useState('');
+  const [month, setMonth] = React.useState('');
+  const [year, setYear] = React.useState('');
+
+  React.useEffect(() => {
+    if (defaultValue) {
+      const parts = defaultValue.split('/');
+      if (parts.length === 3) {
+        setDay(parts[0]);
+        setMonth(parts[1]);
+        setYear(parts[2]);
+      }
+    }
+  }, [defaultValue]);
+
+  const combinedDate = (day && month && year) ? `${day.padStart(2, '0')}/${month.padStart(2, '0')}/${year}` : '';
+
+  return (
+    <div className="flex items-center gap-2 w-full">
+      <input type="hidden" name={name} value={combinedDate} />
+      <input 
+        type="text" 
+        inputMode="numeric"
+        placeholder="DD" 
+        value={day} 
+        onChange={e => setDay(e.target.value.replace(/\D/g, '').slice(0, 2))}
+        className="flex-1 min-w-0 px-2 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm text-center focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+      />
+      <span className="text-slate-300 font-bold">/</span>
+      <input 
+        type="text" 
+        inputMode="numeric"
+        placeholder="MM" 
+        value={month} 
+        onChange={e => setMonth(e.target.value.replace(/\D/g, '').slice(0, 2))}
+        className="flex-1 min-w-0 px-2 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm text-center focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+      />
+      <span className="text-slate-300 font-bold">/</span>
+      <input 
+        type="text" 
+        inputMode="numeric"
+        placeholder="YYYY" 
+        value={year} 
+        onChange={e => setYear(e.target.value.replace(/\D/g, '').slice(0, 4))}
+        className="flex-[1.5] min-w-0 px-2 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm text-center focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+      />
+    </div>
+  );
+};
 
 export const StaffEditModal: React.FC<StaffEditModalProps> = ({
   editingStaff,
   setEditingStaff,
-  handleStaffSubmit
+  handleStaffSubmit,
+  handleRemoveStaff,
+  isRemovingStaff = false,
 }) => {
   if (!editingStaff) return null;
 
@@ -53,7 +118,7 @@ export const StaffEditModal: React.FC<StaffEditModalProps> = ({
                   {editingStaff.id === 'new' ? 'Add Staff Member' : 'Edit Staff Member'}
                 </h3>
                 {editingStaff.id !== 'new' && (
-                  <p className="text-xs text-slate-500 font-medium uppercase tracking-wider">Member ID: #{editingStaff.id}</p>
+                  <p className="text-xs text-slate-500 font-medium uppercase tracking-wider">Member ID: {editingStaff.id}</p>
                 )}
               </div>
             </div>
@@ -70,18 +135,34 @@ export const StaffEditModal: React.FC<StaffEditModalProps> = ({
           <div className="p-4 sm:p-8 space-y-6 flex-1 overflow-y-auto">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
               <div className="space-y-2">
-                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Full Name</label>
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">First Name</label>
                 <div className="relative">
                   <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                   <input 
                     type="text" 
-                    name="name"
+                    name="firstName"
                     required
-                    defaultValue={editingStaff.name}
+                    defaultValue={editingStaff.name ? editingStaff.name.split(' ')[0] : ''}
                     className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
                   />
                 </div>
               </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Last Name</label>
+                <div className="relative">
+                  <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <input 
+                    type="text" 
+                    name="lastName"
+                    required
+                    defaultValue={editingStaff.name && editingStaff.name.includes(' ') ? editingStaff.name.split(' ').slice(1).join(' ') : ''}
+                    className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
               <div className="space-y-2">
                 <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Employee ID</label>
                 <div className="relative">
@@ -91,6 +172,19 @@ export const StaffEditModal: React.FC<StaffEditModalProps> = ({
                     name="employee_id"
                     required
                     defaultValue={editingStaff.employee_id}
+                    className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Phone Number</label>
+                <div className="relative">
+                  <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <input 
+                    type="text" 
+                    name="phone"
+                    required
+                    defaultValue={editingStaff.phone}
                     className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
                   />
                 </div>
@@ -126,27 +220,13 @@ export const StaffEditModal: React.FC<StaffEditModalProps> = ({
               </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Phone Number</label>
-              <div className="relative">
-                <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                <input 
-                  type="text" 
-                  name="phone"
-                  required
-                  defaultValue={editingStaff.phone}
-                  className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
-                />
-              </div>
-            </div>
+
 
             <div className="space-y-2">
               <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Date of Birth</label>
-              <input 
-                type="date" 
-                name="dob"
-                defaultValue={editingStaff.dob || ''}
-                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+              <ThreeFieldDateInput 
+                name="dob" 
+                defaultValue={formatEditableDayFirstDate(editingStaff.dob)} 
               />
             </div>
 
@@ -163,13 +243,26 @@ export const StaffEditModal: React.FC<StaffEditModalProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
               <div className="space-y-2">
                 <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Date of Employment</label>
-                <input 
-                  type="date" 
-                  name="employment_date"
-                  defaultValue={editingStaff.employment_date || ''}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+                <ThreeFieldDateInput 
+                  name="employment_date" 
+                  defaultValue={formatEditableDayFirstDate(editingStaff.employment_date)} 
                 />
               </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Employee Status</label>
+                <select
+                  name="status"
+                  defaultValue={editingStaff.status || 'Full-Time'}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+                >
+                  <option value="Full-Time">Full-Time</option>
+                  <option value="Part-Time">Part-Time</option>
+                  <option value="Terminated">Terminated</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
               <div className="space-y-2">
                 <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Job Role</label>
                 <select
@@ -210,62 +303,73 @@ export const StaffEditModal: React.FC<StaffEditModalProps> = ({
                 </select>
               </div>
               <div className="space-y-2">
-                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Insurance Expiry</label>
-                <input 
-                  type="date" 
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Insurance Coverage</label>
+                <select
                   name="insurance_expiry"
-                  defaultValue={editingStaff.insurance_expiry || ''}
+                  defaultValue={normalizeInsuranceCoverage(editingStaff.insurance_expiry)}
                   className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
-                />
+                >
+                  <option value="">Select coverage</option>
+                  <option value="Yes">Yes</option>
+                  <option value="No">No</option>
+                </select>
               </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
               <div className="space-y-2">
-                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">PSRA Expiry</label>
-                <input 
-                  type="date" 
-                  name="psra_expiry"
-                  defaultValue={editingStaff.psra_expiry || ''}
-                  onChange={(e) => {
-                    if (e.target.value) {
-                      e.currentTarget.form?.requestSubmit();
-                    }
-                  }}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
-                />
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">PSRA ID</label>
+                <div className="relative">
+                  <Hash className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <input 
+                    type="text" 
+                    name="psra"
+                    defaultValue={editingStaff.psra || ''}
+                    className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
+                  />
+                </div>
               </div>
               <div className="space-y-2">
-                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">Status</label>
-                <select
-                  name="status"
-                  defaultValue={editingStaff.status || 'Employeed'}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all font-medium"
-                >
-                  <option value="Employeed">Employeed</option>
-                  <option value="Unemployees">Unemployees</option>
-                  <option value="Leave of Absence">Leave of Absence</option>
-                </select>
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest ml-1">PSRA Expiry</label>
+                <ThreeFieldDateInput 
+                  name="psra_expiry" 
+                  defaultValue={formatEditableDayFirstDate(editingStaff.psra_expiry)} 
+                />
               </div>
             </div>
           </div>
 
           {/* Modal Footer */}
-          <div className="p-4 sm:p-6 bg-slate-50 border-t border-slate-100 flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-3">
-            <button 
-              type="button"
-              onClick={() => setEditingStaff(null)}
-              className="w-full sm:w-auto px-6 py-2.5 text-sm font-bold text-slate-600 hover:text-slate-900 transition-colors"
-            >
-              Cancel
-            </button>
-            <button 
-              type="submit"
-              className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-2.5 bg-slate-900 text-white rounded-lg font-bold shadow-lg shadow-slate-900/20 hover:bg-slate-800 transition-all active:scale-95"
-            >
-              <Save className="w-4 h-4" />
-              {editingStaff.id === 'new' ? 'Add Profile' : 'Update Profile'}
-            </button>
+          <div className="p-4 sm:p-6 bg-slate-50 border-t border-slate-100 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="w-full sm:w-auto">
+              {editingStaff.id !== 'new' && handleRemoveStaff ? (
+                <button
+                  type="button"
+                  onClick={handleRemoveStaff}
+                  disabled={isRemovingStaff}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm font-bold text-red-700 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  {isRemovingStaff ? 'Removing...' : 'Remove Staff'}
+                </button>
+              ) : null}
+            </div>
+            <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center">
+              <button 
+                type="button"
+                onClick={() => setEditingStaff(null)}
+                className="w-full sm:w-auto px-6 py-2.5 text-sm font-bold text-slate-600 hover:text-slate-900 transition-colors"
+              >
+                Cancel
+              </button>
+              <button 
+                type="submit"
+                className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-2.5 bg-slate-900 text-white rounded-lg font-bold shadow-lg shadow-slate-900/20 hover:bg-slate-800 transition-all active:scale-95"
+              >
+                <Save className="w-4 h-4" />
+                {editingStaff.id === 'new' ? 'Add Profile' : 'Update Profile'}
+              </button>
+            </div>
           </div>
         </form>
       </div>

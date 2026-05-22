@@ -37,13 +37,12 @@ export type DeliveryLogRecord = {
 };
 
 export type AdminRecord = {
-  id: string;
+  id: string | number;
   username: string;
   password?: string;
   name: string;
   role: string;
   isDefault: boolean;
-  staffId?: string;
 };
 
 export type PreviewBatchEntry = {

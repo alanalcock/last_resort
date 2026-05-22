@@ -5,10 +5,11 @@ import { useRouter } from 'next/navigation';
 import { useDashboardData } from '@/hooks/useDashboardData';
 import { parsePayrollFile, type ParsedPayslipRecord } from '@/lib/fileParser';
 import { buildPayrollPreview } from '@/lib/payroll/preview';
-import { DEFAULT_ADMINS, formatPayslipCell } from '@/lib/payroll/utils';
+import { DEFAULT_ADMINS, formatDayFirstDate, formatPayslipCell, normalizeDateInputToIso, formatNameLastFirst } from '@/lib/payroll/utils';
 import { handleDownloadPDF } from '@/lib/pdfGenerator';
 import { AdminOptionsPanel } from '@/components/admin/AdminOptionsPanel';
 import { StaffEditModal } from '@/components/staff/StaffEditModal';
+import { AttendanceRegistrationModal } from '@/components/staff/AttendanceRegistrationModal';
 import type { AdminRecord, PreviewBatchEntry, StaffRecord, UnmatchedPayslipEntry } from '@/types/payroll';
 import { 
   CloudUpload, 
@@ -25,21 +26,65 @@ import {
   Loader2,
   Download,
   Undo2,
+  AlertTriangle,
+  CheckCircle2,
+  Briefcase,
+  Info,
+  BarChart3,
+  UserCheck,
+  UserMinus,
+  UserX,
+  ShieldAlert,
+  Clock,
+  Hash,
 } from 'lucide-react';
 
 const tabs = [
+  { id: 'reports', label: 'Reports', icon: BarChart3 },
   { id: 'staff', label: 'All Staff', icon: Users },
   { id: 'payroll', label: 'Upload Payroll', icon: CreditCard },
   { id: 'options', label: 'Options', icon: Settings },
 ];
 
+const getExpiryStatus = (expiryDateStr: string | null | undefined) => {
+  if (!expiryDateStr) return null;
+
+  const expiryDate = new Date(expiryDateStr);
+  if (isNaN(expiryDate.getTime())) return null;
+
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  expiryDate.setHours(0, 0, 0, 0);
+
+  const diffTime = expiryDate.getTime() - now.getTime();
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+  if (diffDays < 0) {
+    return { label: `Expired (${Math.abs(diffDays)}d ago)`, isExpired: true, isExpiringSoon: false, diffDays };
+  } else if (diffDays <= 30) {
+    return { label: `${diffDays}d left`, isExpired: false, isExpiringSoon: true, diffDays };
+  } else {
+    return { label: 'Active', isExpired: false, isExpiringSoon: false, diffDays };
+  }
+};
+
 export default function Home() {
   const router = useRouter();
 
-  const [activeTab, setActiveTab] = useState('staff');
+  const [activeTab, setActiveTab] = useState('reports');
   const [searchTerm, setSearchTerm] = useState('');
   const deferredSearchTerm = useDeferredValue(searchTerm);
   const [statusFilter, setStatusFilter] = useState('All');
+  const [complianceSearch, setComplianceSearch] = useState('');
+  const [complianceFilter, setComplianceFilter] = useState('all');
+
+  const [reportDate, setReportDate] = useState(() => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  });
 
   // Admin Management State
   const [admins, setAdmins] = useState<AdminRecord[]>(DEFAULT_ADMINS);
@@ -47,6 +92,8 @@ export default function Home() {
 
   // Staff Editing State
   const [editingStaff, setEditingStaff] = useState<StaffRecord | any | null>(null);
+  const [registeringStaff, setRegisteringStaff] = useState<StaffRecord | null>(null);
+  const [isRemovingStaff, setIsRemovingStaff] = useState(false);
 
   // Application State
   const [currentBroadcastInfo, setCurrentBroadcastInfo] = useState<{filename: string; total: number} | null>(null);
@@ -60,6 +107,9 @@ export default function Home() {
     setStaffList,
     deliveryLogs,
     setDeliveryLogs,
+    todayAttendance,
+    setTodayAttendance,
+    fetchAttendance,
     isLoading,
   } = useDashboardData(handleUnauthorized);
 
@@ -111,14 +161,189 @@ export default function Home() {
   const filteredStaff = useMemo(() => {
     const normalizedSearch = deferredSearchTerm.trim().toLowerCase();
 
-    return staffList.filter(person => {
-      const matchesSearch = !normalizedSearch ||
-        String(person.name || '').toLowerCase().includes(normalizedSearch) ||
-        String(person.employee_id || '').toLowerCase().includes(normalizedSearch);
+    return staffList
+      .filter(person => {
+        const matchesSearch = !normalizedSearch ||
+          String(person.name || '').toLowerCase().includes(normalizedSearch) ||
+          String(person.employee_id || '').toLowerCase().includes(normalizedSearch);
 
-      return matchesSearch && (statusFilter === 'All' || person.status === statusFilter);
-    });
+        return matchesSearch && (statusFilter === 'All' || person.status === statusFilter);
+      })
+      .sort((a, b) => {
+        const aLast = (a.name.trim().split(' ').pop() || '').toLowerCase();
+        const bLast = (b.name.trim().split(' ').pop() || '').toLowerCase();
+        return aLast.localeCompare(bLast);
+      });
   }, [deferredSearchTerm, staffList, statusFilter]);
+
+  const activeStaff = useMemo(() => {
+    return staffList
+      .filter(s => s.status !== 'Terminated')
+      .sort((a, b) => {
+        const aLast = (a.name.trim().split(' ').pop() || '').toLowerCase();
+        const bLast = (b.name.trim().split(' ').pop() || '').toLowerCase();
+        return aLast.localeCompare(bLast);
+      });
+  }, [staffList]);
+
+  const todayAttendanceSummary = useMemo(() => {
+    const present: { staff: StaffRecord; presentType: string }[] = [];
+    const leave: { staff: StaffRecord; leaveType: string }[] = [];
+    const absent: StaffRecord[] = [];
+    const unreported: StaffRecord[] = [];
+
+    const attendanceMap = new Map<number, any>();
+    todayAttendance.forEach((log) => {
+      if (log.staff_id) {
+        attendanceMap.set(log.staff_id, log);
+      }
+    });
+
+    activeStaff.forEach((staff) => {
+      const log = attendanceMap.get(staff.id);
+      if (!log) {
+        unreported.push(staff);
+      } else if (log.status === 'Present') {
+        present.push({ staff, presentType: log.present_type || 'On Time' });
+      } else if (log.status === 'Leave') {
+        leave.push({ staff, leaveType: log.leave_type || 'Leave' });
+      } else if (log.status === 'Absent') {
+        absent.push(staff);
+      }
+    });
+
+    return { present, leave, absent, unreported };
+  }, [activeStaff, todayAttendance]);
+
+  const complianceData = useMemo(() => {
+    const list: {
+      staff: StaffRecord;
+      issues: {
+        type: 'missing' | 'expired' | 'expiring';
+        field: string;
+        message: string;
+        severity: 'critical' | 'warning';
+      }[];
+    }[] = [];
+
+    const normalizeInsuranceCoverage = (value: string | null | undefined) => {
+      if (!value) return '';
+      const normalized = value.trim().toLowerCase();
+      if (normalized === 'no') return 'No';
+      return 'Yes';
+    };
+
+    activeStaff.forEach((staff) => {
+      const issues: {
+        type: 'missing' | 'expired' | 'expiring';
+        field: string;
+        message: string;
+        severity: 'critical' | 'warning';
+      }[] = [];
+
+      // Check TRN
+      if (!staff.trn || !staff.trn.trim()) {
+        issues.push({
+          type: 'missing',
+          field: 'TRN',
+          message: 'Missing TRN Number',
+          severity: 'critical',
+        });
+      }
+
+      // Check NIS
+      if (!staff.nis_number || !staff.nis_number.trim()) {
+        issues.push({
+          type: 'missing',
+          field: 'NIS',
+          message: 'Missing NIS Number',
+          severity: 'critical',
+        });
+      }
+
+      // Check PSRA ID
+      const hasPsraId = staff.psra && staff.psra.trim();
+      if (!hasPsraId) {
+        issues.push({
+          type: 'missing',
+          field: 'PSRA ID',
+          message: 'Missing PSRA ID',
+          severity: 'critical',
+        });
+      }
+
+      // Check PSRA Expiry (only if PSRA ID is present)
+      if (hasPsraId) {
+        if (!staff.psra_expiry || !staff.psra_expiry.trim()) {
+          issues.push({
+            type: 'missing',
+            field: 'PSRA Expiry',
+            message: 'Missing PSRA Expiry Date',
+            severity: 'critical',
+          });
+        } else {
+          const expiryStatus = getExpiryStatus(staff.psra_expiry);
+          if (expiryStatus) {
+            if (expiryStatus.isExpired) {
+              issues.push({
+                type: 'expired',
+                field: 'PSRA Expiry',
+                message: `PSRA Card Expired (${Math.abs(expiryStatus.diffDays)} days ago)`,
+                severity: 'critical',
+              });
+            } else if (expiryStatus.isExpiringSoon) {
+              issues.push({
+                type: 'expiring',
+                field: 'PSRA Expiry',
+                message: `PSRA Card Expiring (${expiryStatus.diffDays} days left)`,
+                severity: 'warning',
+              });
+            }
+          }
+        }
+      }
+
+      // Check Insurance Coverage
+      if (normalizeInsuranceCoverage(staff.insurance_expiry) !== 'Yes') {
+        issues.push({
+          type: 'missing',
+          field: 'Insurance',
+          message: 'No Insurance Coverage',
+          severity: 'warning',
+        });
+      }
+
+      if (issues.length > 0) {
+        list.push({ staff, issues });
+      }
+    });
+
+    return list;
+  }, [activeStaff]);
+
+  const filteredComplianceData = useMemo(() => {
+    const searchNormalized = complianceSearch.trim().toLowerCase();
+    
+    return complianceData.filter((item) => {
+      const matchesSearch = !searchNormalized ||
+        item.staff.name.toLowerCase().includes(searchNormalized) ||
+        (item.staff.employee_id && item.staff.employee_id.toLowerCase().includes(searchNormalized));
+
+      if (!matchesSearch) return false;
+
+      if (complianceFilter === 'all') return true;
+      if (complianceFilter === 'missing') {
+        return item.issues.some((issue) => issue.type === 'missing');
+      }
+      if (complianceFilter === 'expired') {
+        return item.issues.some((issue) => issue.type === 'expired');
+      }
+      if (complianceFilter === 'expiring') {
+        return item.issues.some((issue) => issue.type === 'expiring');
+      }
+      return true;
+    });
+  }, [complianceData, complianceSearch, complianceFilter]);
 
   const retractablePayrollDates = useMemo(() => {
     const counts = new Map<string, number>();
@@ -302,22 +527,26 @@ export default function Home() {
   const handleStaffSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const formData = new FormData(e.target as HTMLFormElement);
+    const firstName = formData.get('firstName') as string || '';
+    const lastName = formData.get('lastName') as string || '';
+    const fullName = [firstName.trim(), lastName.trim()].filter(Boolean).join(' ');
+
     const newStaffData = {
-      name: formData.get('name') as string,
+      name: fullName,
       trn: formData.get('trn') as string,
       nis_number: formData.get('nis_number') as string,
       employee_id: formData.get('employee_id') as string,
-      dob: formData.get('dob') as string,
+      dob: normalizeDateInputToIso(formData.get('dob')),
       home_address: formData.get('home_address') as string,
-      employment_date: formData.get('employment_date') as string,
+      employment_date: normalizeDateInputToIso(formData.get('employment_date')),
       insurance: formData.get('insurance') as string,
       insurance_expiry: formData.get('insurance_expiry') as string,
       psra: formData.get('psra') as string,
-      psra_expiry: formData.get('psra_expiry') as string,
+      psra_expiry: normalizeDateInputToIso(formData.get('psra_expiry')),
       job_role: formData.get('job_role') as string,
       email: editingStaff?.email || null,
       phone: formData.get('phone') as string,
-      status: (formData.get('status') as string) || editingStaff?.status || 'Employeed',
+      status: (formData.get('status') as string) || editingStaff?.status || 'Full-Time',
       send_whatsapp: editingStaff?.send_whatsapp ?? (!!(formData.get('phone') as string)?.trim()),
       send_email: false
     };
@@ -351,14 +580,44 @@ export default function Home() {
     setEditingStaff(null);
   };
 
-  const saveSetting = async (key: string, value: string) => {
-    const res = await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key, value }),
-    });
-    
-    if (!res.ok) console.error(`Error saving ${key}`);
+  const handleRemoveStaff = async () => {
+    if (!editingStaff || editingStaff.id === 'new') {
+      return;
+    }
+
+    const staffId = Number(editingStaff.id);
+    const staffName = editingStaff.name || 'this staff member';
+    const confirmed = window.confirm(
+      `Remove ${staffName}? This will also remove their attendance, portal payslip logs, and saved payslip records.`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setIsRemovingStaff(true);
+
+    try {
+      const response = await fetch('/api/staff', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: staffId }),
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result?.error || 'Unable to remove staff.');
+      }
+
+      setStaffList((prev) => prev.filter((staff) => staff.id !== staffId));
+      setDeliveryLogs((prev) => prev.filter((log) => log.staffId !== staffId));
+      setEditingStaff(null);
+    } catch (error) {
+      console.error('Remove staff error:', error);
+      alert('Unable to remove staff right now.');
+    } finally {
+      setIsRemovingStaff(false);
+    }
   };
 
   const handlePromoteStaffToAdmin = async (name: string, username: string) => {
@@ -369,41 +628,33 @@ export default function Home() {
     }
 
     try {
-      // 1. Create a brand new active Staff record in the database for the new admin, with password set to null (triggers initial default password flow)
-      const res = await fetch('/api/staff', {
+      const res = await fetch('/api/admins', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: name.trim(),
-          status: 'Employeed',
-          job_role: 'Administrator',
-          password: null
+          username: cleanUsername,
+          role: 'Administrator',
         }),
       });
 
       if (!res.ok) {
-        throw new Error('Failed to create database record for new administrator.');
+        const result = await res.json();
+        throw new Error(result?.error || 'Failed to create database record for new administrator.');
       }
 
-      const newStaff = await res.json();
-      
-      // Update local staff list state so it lists the new staff member
-      setStaffList(prev => [newStaff, ...prev]);
-
-      // 2. Create the admin configuration entry
+      const createdAdmin = await res.json();
       const newAdmin = {
-        id: Date.now().toString(),
-        staffId: newStaff.id.toString(),
-        name: name.trim(),
-        username: cleanUsername,
-        role: 'Administrator',
-        isDefault: false
+        id: createdAdmin.id,
+        name: createdAdmin.name,
+        username: createdAdmin.username,
+        role: createdAdmin.role,
+        isDefault: Boolean(createdAdmin.is_default ?? createdAdmin.isDefault),
       };
 
       const updatedAdmins = [...admins, newAdmin];
       setAdmins(updatedAdmins);
       setLoadedAdmins(updatedAdmins);
-      await saveSetting('admins_list', JSON.stringify(updatedAdmins));
       alert(`${name.trim()} has been added as an Administrator successfully!\n\nThey can log in using their username "${cleanUsername}" and default password "admin", and will be prompted to choose a new secure password on their first login.`);
       setIsAddingAdmin(false);
     } catch (error) {
@@ -412,7 +663,7 @@ export default function Home() {
     }
   };
 
-  const handleRemoveAdmin = async (adminId: string) => {
+  const handleRemoveAdmin = async (adminId: string | number) => {
     if (adminId === 'default') {
       alert('Cannot delete default admin.');
       return;
@@ -422,10 +673,20 @@ export default function Home() {
     }
 
     try {
-      const updatedAdmins = admins.filter(a => a.id !== adminId && String(a.staffId) !== String(adminId));
+      const response = await fetch('/api/admins', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: adminId }),
+      });
+
+      if (!response.ok) {
+        const result = await response.json();
+        throw new Error(result?.error || 'Failed to remove administrator.');
+      }
+
+      const updatedAdmins = admins.filter(a => String(a.id) !== String(adminId));
       setAdmins(updatedAdmins);
       setLoadedAdmins(updatedAdmins);
-      await saveSetting('admins_list', JSON.stringify(updatedAdmins));
       alert('Admin access has been successfully revoked.');
     } catch (e) {
       console.error(e);
@@ -443,15 +704,14 @@ export default function Home() {
       }
       
       try {
-        const response = await fetch('/api/staff', {
+        const response = await fetch('/api/admins', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: Number(admin.staffId), password: null }),
+          body: JSON.stringify({ id: admin.id, password: null }),
         });
         
         if (response.ok) {
           alert(`Administrator ${admin.name}'s password has been reset to "admin". They will be prompted to choose a new password on their next login.`);
-          setStaffList(prev => prev.map(s => s.id === Number(admin.staffId) ? { ...s, password: null } : s));
         } else {
           alert('Failed to reset administrator password.');
         }
@@ -510,6 +770,11 @@ export default function Home() {
 
     setIsProcessing(false);
   };
+
+  const trnAlertsCount = complianceData.reduce((acc, { issues }) => acc + issues.filter(i => i.field === 'TRN').length, 0);
+  const nisAlertsCount = complianceData.reduce((acc, { issues }) => acc + issues.filter(i => i.field === 'NIS').length, 0);
+  const psraAlertsCount = complianceData.reduce((acc, { issues }) => acc + issues.filter(i => i.field.startsWith('PSRA')).length, 0);
+  const insuranceAlertsCount = complianceData.reduce((acc, { issues }) => acc + issues.filter(i => i.field === 'Insurance').length, 0);
 
   if (isLoading) {
     return (
@@ -578,6 +843,321 @@ export default function Home() {
         {/* Main Content Area */}
         <div className="bg-white/80 backdrop-blur-xl border border-slate-200/60 rounded-xl shadow-xl overflow-hidden min-h-[520px] sm:min-h-[600px] flex flex-col p-0">
           
+          {activeTab === 'reports' && (
+            <div className="flex-1 p-4 sm:p-6 lg:p-8 space-y-8">
+              
+              {/* Reports Header / Date Picker */}
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <h2 className="text-xl font-black text-slate-900 tracking-tight flex items-center gap-3">
+                  <BarChart3 className="w-5 h-5 text-indigo-500" />
+                  Daily Operations Report
+                </h2>
+              </div>
+
+              {/* Overview Metrics Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+                
+                {/* Metric 1: TRN Alerts */}
+                <div className="bg-gradient-to-br from-amber-50/50 to-white border border-amber-100/80 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all duration-300 hover:-translate-y-0.5 flex items-center gap-4 relative overflow-hidden group">
+                  <div className="absolute top-0 right-0 w-24 h-24 bg-amber-500/5 rounded-full translate-x-6 -translate-y-6 group-hover:scale-110 transition-transform duration-500" />
+                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 ${trnAlertsCount > 0 ? 'bg-amber-50 text-amber-600' : 'bg-slate-50 text-slate-400'}`}>
+                    <Hash className={`w-6 h-6 ${trnAlertsCount > 0 ? 'animate-pulse' : ''}`} />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-amber-600/80 uppercase tracking-widest">Missing TRN</p>
+                    <h3 className="text-2xl font-extrabold text-slate-800 mt-1 tabular-nums">
+                      {trnAlertsCount}
+                    </h3>
+                    <p className="text-[11px] text-slate-400 mt-1 font-medium truncate">Staff without TRN on file</p>
+                  </div>
+                </div>
+
+                {/* Metric 2: NIS Alerts */}
+                <div className="bg-gradient-to-br from-blue-50/50 to-white border border-blue-100/80 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all duration-300 hover:-translate-y-0.5 flex items-center gap-4 relative overflow-hidden group">
+                  <div className="absolute top-0 right-0 w-24 h-24 bg-blue-500/5 rounded-full translate-x-6 -translate-y-6 group-hover:scale-110 transition-transform duration-500" />
+                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 ${nisAlertsCount > 0 ? 'bg-blue-50 text-blue-600' : 'bg-slate-50 text-slate-400'}`}>
+                    <FileText className={`w-6 h-6 ${nisAlertsCount > 0 ? 'animate-pulse' : ''}`} />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-blue-600/80 uppercase tracking-widest">Missing NIS</p>
+                    <h3 className="text-2xl font-extrabold text-slate-800 mt-1 tabular-nums">
+                      {nisAlertsCount}
+                    </h3>
+                    <p className="text-[11px] text-slate-400 mt-1 font-medium truncate">Staff without NIS on file</p>
+                  </div>
+                </div>
+
+                {/* Metric 3: PSRA Alerts */}
+                <div className="bg-gradient-to-br from-rose-50/50 to-white border border-rose-100/80 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all duration-300 hover:-translate-y-0.5 flex items-center gap-4 relative overflow-hidden group">
+                  <div className="absolute top-0 right-0 w-24 h-24 bg-rose-500/5 rounded-full translate-x-6 -translate-y-6 group-hover:scale-110 transition-transform duration-500" />
+                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 ${psraAlertsCount > 0 ? 'bg-rose-50 text-rose-600' : 'bg-slate-50 text-slate-400'}`}>
+                    {psraAlertsCount > 0 ? <ShieldAlert className="w-6 h-6 animate-bounce" /> : <CheckCircle2 className="w-6 h-6" />}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-rose-650/80 uppercase tracking-widest">PSRA Alerts</p>
+                    <h3 className="text-2xl font-extrabold text-slate-800 mt-1 tabular-nums">
+                      {psraAlertsCount}
+                    </h3>
+                    <p className="text-[11px] text-slate-400 mt-1 font-medium truncate">Missing or expired PSRA</p>
+                  </div>
+                </div>
+
+                {/* Metric 4: Insurance Alerts */}
+                <div className="bg-gradient-to-br from-purple-50/50 to-white border border-purple-100/80 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all duration-300 hover:-translate-y-0.5 flex items-center gap-4 relative overflow-hidden group">
+                  <div className="absolute top-0 right-0 w-24 h-24 bg-purple-500/5 rounded-full translate-x-6 -translate-y-6 group-hover:scale-110 transition-transform duration-500" />
+                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 ${insuranceAlertsCount > 0 ? 'bg-purple-50 text-purple-600' : 'bg-slate-50 text-slate-400'}`}>
+                    <AlertCircle className={`w-6 h-6 ${insuranceAlertsCount > 0 ? 'animate-pulse' : ''}`} />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-purple-600/80 uppercase tracking-widest">Insurance</p>
+                    <h3 className="text-2xl font-extrabold text-slate-800 mt-1 tabular-nums">
+                      {insuranceAlertsCount}
+                    </h3>
+                    <p className="text-[11px] text-slate-400 mt-1 font-medium truncate">Staff without coverage</p>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Daily Operations Row - Unified Master List */}
+              <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-sm flex flex-col h-[600px] mb-6">
+                <div className="flex flex-col xl:flex-row xl:items-center justify-between pb-4 border-b border-slate-100 shrink-0 gap-4">
+                  <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2">
+                      <Briefcase className="w-5 h-5 text-indigo-500" />
+                      <h4 className="text-base font-bold text-slate-900">Daily Attendance</h4>
+                    </div>
+                    <div className="relative flex items-center justify-center">
+                      <button 
+                        type="button"
+                        onClick={(e) => {
+                          try {
+                            const picker = document.getElementById('report-date-picker') as HTMLInputElement | null;
+                            if (picker && typeof picker.showPicker === 'function') {
+                              picker.showPicker();
+                            }
+                          } catch (err) {
+                            console.error('showPicker error:', err);
+                          }
+                        }}
+                        className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm hover:bg-slate-50 transition-colors focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900"
+                      >
+                        <Calendar className="w-4 h-4 text-slate-500" />
+                        <span className="text-sm font-semibold text-slate-700">
+                          {(() => {
+                            if (!reportDate) return 'Select Date';
+                            const parts = reportDate.split('-');
+                            if (parts.length !== 3) return reportDate;
+                            const dateObj = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+                            return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }).format(dateObj);
+                          })()}
+                        </span>
+                      </button>
+                      <input
+                        id="report-date-picker"
+                        type="date"
+                        value={reportDate}
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            setReportDate(e.target.value);
+                            fetchAttendance(e.target.value);
+                          }
+                        }}
+                        className="absolute opacity-0 w-0 h-0 pointer-events-none -z-10"
+                        style={{ position: 'absolute', bottom: 0, left: 0 }}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <span className="px-2.5 py-0.5 rounded-full bg-green-50 text-green-700 text-xs font-bold tabular-nums border border-green-100">
+                      {todayAttendanceSummary.present.length} Present
+                    </span>
+                    <span className="px-2.5 py-0.5 rounded-full bg-red-50 text-red-700 text-xs font-bold tabular-nums border border-red-100">
+                      {todayAttendanceSummary.absent.length} Absent
+                    </span>
+                    <span className="px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-700 text-xs font-bold tabular-nums border border-amber-100">
+                      {todayAttendanceSummary.leave.length} On Leave
+                    </span>
+                    <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 text-xs font-bold tabular-nums border border-slate-200">
+                      {todayAttendanceSummary.unreported.length} Unreported
+                    </span>
+                  </div>
+                </div>
+                <div className="flex-1 overflow-y-auto py-3 pr-2 space-y-2 mt-2">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {activeStaff.map((staff) => {
+                      const log = todayAttendance.find((a) => a.staff_id === staff.id);
+                      const status = log?.status || '';
+                      
+                      let cardColor = 'bg-white border-slate-200 hover:bg-slate-50 hover:border-slate-300';
+                      let statusLabel = 'Unreported';
+                      let badgeColor = 'bg-slate-100 text-slate-600 border border-slate-200/60';
+                      let avatarColor = 'bg-slate-100 text-slate-500';
+
+                      if (status === 'Present') {
+                        cardColor = 'bg-green-50/50 border-green-200 hover:bg-green-100/50 hover:border-green-300';
+                        statusLabel = 'Present';
+                        badgeColor = 'bg-green-100 text-green-700 border border-green-200/60';
+                        avatarColor = 'bg-green-100 text-green-700';
+                      } else if (status === 'Leave') {
+                        cardColor = 'bg-amber-50/50 border-amber-200 hover:bg-amber-100/50 hover:border-amber-300';
+                        statusLabel = 'On Leave';
+                        badgeColor = 'bg-amber-100 text-amber-800 border border-amber-200/60';
+                        avatarColor = 'bg-amber-100 text-amber-700';
+                      } else if (status === 'Absent') {
+                        cardColor = 'bg-red-50/50 border-red-200 hover:bg-red-100/50 hover:border-red-300';
+                        statusLabel = 'Absent';
+                        badgeColor = 'bg-red-100 text-red-700 border border-red-200/60';
+                        avatarColor = 'bg-red-100 text-red-700';
+                      }
+
+                      return (
+                        <button 
+                          key={staff.id} 
+                          onClick={() => setRegisteringStaff(staff)}
+                          className={`w-full text-left flex items-center justify-between p-3 border rounded-xl transition-all group shadow-sm ${cardColor}`}
+                        >
+                          <div className="min-w-0 flex items-center gap-3">
+                            <div className={`w-9 h-9 rounded-lg font-bold text-[11px] flex items-center justify-center shrink-0 uppercase transition-colors ${avatarColor}`}>
+                              {formatNameLastFirst(staff.name).replace(',', '').split(' ').map((n: string) => n[0]).join('').substring(0, 2)}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-sm font-bold text-slate-800 truncate group-hover:text-indigo-600 transition-colors">{formatNameLastFirst(staff.name)}</p>
+                              <p className="text-[10px] text-slate-500 font-medium">{staff.job_role || 'No role assigned'}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className={`px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors ${badgeColor}`}>
+                              {statusLabel}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {activeStaff.length === 0 && (
+                    <div className="h-full flex flex-col items-center justify-center text-center p-8">
+                      <Users className="w-12 h-12 text-slate-300 mb-4" />
+                      <p className="text-sm font-semibold text-slate-500">No active staff members found</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Document Compliance Center */}
+              <div className="bg-white border border-slate-200/80 rounded-2xl shadow-sm overflow-hidden flex flex-col">
+                {/* Header with Search and Filter */}
+                <div className="p-5 border-b border-slate-100 flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-slate-50/40">
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 w-full lg:max-w-xl">
+                    <div className="flex items-center gap-2 shrink-0">
+                      <ShieldAlert className="w-5 h-5 text-rose-500" />
+                      <h4 className="text-base font-bold text-slate-900">Document Compliance Center</h4>
+                    </div>
+                    <div className="relative flex-1">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <input 
+                        type="text" 
+                        placeholder="Search compliant lists..."
+                        value={complianceSearch}
+                        onChange={(e) => setComplianceSearch(e.target.value)}
+                        className="w-full pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex bg-slate-100/85 p-1 rounded-lg border border-slate-200/40 self-start lg:self-auto overflow-x-auto max-w-full">
+                    {[
+                      { id: 'all', label: 'All Issues' },
+                      { id: 'missing', label: 'Missing Docs' },
+                      { id: 'expired', label: 'Expired' },
+                      { id: 'expiring', label: 'Expiring Soon' },
+                    ].map((btn) => (
+                      <button
+                        key={btn.id}
+                        onClick={() => setComplianceFilter(btn.id)}
+                        className={`px-4 py-1.5 rounded-md text-xs font-semibold tracking-wide transition-all shrink-0 ${
+                          complianceFilter === btn.id
+                            ? 'bg-white text-slate-900 shadow-sm border border-slate-200/50'
+                            : 'text-slate-500 hover:text-slate-850'
+                        }`}
+                      >
+                        {btn.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Compliance Content */}
+                <div className="overflow-x-auto">
+                  {filteredComplianceData.length === 0 ? (
+                    <div className="py-12 flex flex-col items-center justify-center text-center bg-white">
+                      <CheckCircle2 className="w-12 h-12 text-green-500 mb-3 animate-pulse" />
+                      <h5 className="text-sm font-bold text-slate-800">No Document Alerts Found</h5>
+                      <p className="text-xs text-slate-400 mt-1 max-w-xs">All active employees have complete, up-to-date documentation matching this filter.</p>
+                    </div>
+                  ) : (
+                    <table className="w-full min-w-[700px] text-left border-collapse">
+                      <thead className="bg-slate-50/50 border-b border-slate-100">
+                        <tr>
+                          <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase tracking-widest">Employee</th>
+                          <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase tracking-widest">Designation</th>
+                          <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase tracking-widest">Identified Issues</th>
+                          <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase tracking-widest text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {filteredComplianceData.map(({ staff, issues }) => (
+                          <tr key={staff.id} className="hover:bg-slate-50/50 transition-colors group">
+                            <td className="px-6 py-4">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-lg bg-slate-900 flex items-center justify-center text-white font-bold text-[11px] shadow-sm shrink-0">
+                                  {staff.employee_id || 'ID'}
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-sm font-bold text-slate-900 group-hover:text-slate-700 transition-colors">{formatNameLastFirst(staff.name)}</p>
+                                  <p className="text-[10px] text-slate-400 font-semibold tracking-wider uppercase mt-0.5">TRN: {staff.trn || 'None'}</p>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-6 py-4">
+                              <p className="text-xs font-semibold text-slate-600">{staff.job_role || <span className="text-slate-400 italic">Unassigned</span>}</p>
+                            </td>
+                            <td className="px-6 py-4">
+                              <div className="flex flex-wrap gap-1.5 max-w-md">
+                                {issues.map((issue, idx) => (
+                                  <span
+                                    key={idx}
+                                    title={issue.message}
+                                    className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold border transition-colors ${
+                                      issue.severity === 'critical'
+                                        ? 'bg-rose-50/70 text-rose-700 border-rose-100 hover:bg-rose-50'
+                                        : 'bg-amber-50/70 text-amber-700 border-amber-100 hover:bg-amber-50'
+                                    }`}
+                                  >
+                                    <span className={`w-1.5 h-1.5 rounded-full ${issue.severity === 'critical' ? 'bg-rose-500' : 'bg-amber-500'}`} />
+                                    {issue.field}: {issue.type === 'missing' ? 'Missing' : issue.type === 'expired' ? 'Expired' : 'Expiring'}
+                                  </span>
+                                ))}
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 text-right">
+                              <button
+                                onClick={() => setEditingStaff(staff)}
+                                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold text-slate-800 bg-white border border-slate-200 hover:bg-slate-900 hover:text-white hover:border-slate-900 transition-all shadow-sm active:scale-95 cursor-pointer"
+                              >
+                                <Pencil className="w-3 h-3" />
+                                Fix Credentials
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {activeTab === 'payroll' && (
             <div className="flex-1 flex items-center justify-center p-5 sm:p-8">
               <div className="w-full max-w-md text-center flex flex-col items-center">
@@ -674,12 +1254,12 @@ export default function Home() {
                     className="w-full sm:w-auto flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors outline-none cursor-pointer"
                   >
                     <option value="All">All Status</option>
-                    <option value="Employeed">Employeed</option>
-                    <option value="Unemployees">Unemployees</option>
-                    <option value="Leave of Absence">Leave of Absence</option>
+                    <option value="Full-Time">Full-Time</option>
+                    <option value="Part-Time">Part-Time</option>
+                    <option value="Terminated">Terminated</option>
                   </select>
                   <button 
-                    onClick={() => setEditingStaff({ id: 'new', name: '', trn: '', email: '', phone: '', dob: '', home_address: '', employment_date: '', insurance: '', insurance_expiry: '', psra: '', psra_expiry: '', job_role: '' })}
+                    onClick={() => setEditingStaff({ id: 'new', name: '', trn: '', email: '', phone: '', dob: '', home_address: '', employment_date: '', insurance: '', insurance_expiry: '', psra: '', psra_expiry: '', job_role: '', status: 'Full-Time' })}
                     className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors shadow-sm"
                   >
                     <Plus className="w-4 h-4" />
@@ -702,10 +1282,10 @@ export default function Home() {
                     >
                       <div className="flex items-center gap-3">
                         <div className="w-20 shrink-0 h-10 px-2 rounded-lg bg-slate-900 flex items-center justify-center text-center text-white font-bold text-[10px] shadow-sm leading-none tabular-nums whitespace-nowrap">
-                          #{person.employee_id}
+                          {person.employee_id}
                         </div>
                         <div className="min-w-0">
-                          <p className="text-sm font-semibold text-slate-900">{person.name}</p>
+                          <p className="text-sm font-semibold text-slate-900">{formatNameLastFirst(person.name)}</p>
                           <p className="text-xs text-slate-500 uppercase tracking-wide">{person.trn}</p>
                         </div>
                       </div>
@@ -729,7 +1309,7 @@ export default function Home() {
                               <div className="flex flex-col gap-0.5">
                                 <div className="flex items-center gap-1.5">
                                   <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                                  <span className="text-sm font-semibold text-slate-700">{lastLog.dateSent}</span>
+                                  <span className="text-sm font-semibold text-slate-700">{formatDayFirstDate(lastLog.dateSent)}</span>
                                 </div>
                                 {lastLog.whatsappStatus === 'Published' || lastLog.whatsappStatus === 'Sent' ? (
                                   <span className="text-[10px] text-green-600 font-semibold uppercase tracking-tight">Published to Portal</span>
@@ -755,7 +1335,7 @@ export default function Home() {
                 ))}
               </div>
 
-              <div className="hidden md:block flex-1 overflow-auto h-[500px]">
+              <div className="hidden md:block flex-1 overflow-x-auto">
                 <table className="w-full min-w-[800px] text-left border-collapse">
                   <thead className="bg-slate-50/50 sticky top-0 backdrop-blur-md">
                     <tr>
@@ -776,11 +1356,11 @@ export default function Home() {
                         >
                           <div className="flex items-center gap-3">
                             <div className="w-20 shrink-0 h-10 px-2 rounded-lg bg-slate-900 flex items-center justify-center text-center text-white font-bold text-[10px] shadow-sm leading-none tabular-nums whitespace-nowrap">
-                              #{person.employee_id}
+                              {person.employee_id}
                             </div>
                             <div>
                               <p className="text-sm font-semibold text-slate-900 group-hover:text-slate-700 transition-colors">
-                                {person.name}
+                                {formatNameLastFirst(person.name)}
                               </p>
                             </div>
                           </div>
@@ -816,7 +1396,7 @@ export default function Home() {
                               <div className="flex flex-col gap-0.5">
                                 <div className="flex items-center gap-1.5">
                                   <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                                  <span className="text-sm font-semibold text-slate-700">{lastLog.dateSent}</span>
+                                  <span className="text-sm font-semibold text-slate-700">{formatDayFirstDate(lastLog.dateSent)}</span>
                                 </div>
                                 {lastLog.whatsappStatus === 'Published' || lastLog.whatsappStatus === 'Sent' ? (
                                   <span className="text-[10px] text-green-600 font-semibold uppercase tracking-tight">Published to Portal</span>
@@ -833,8 +1413,8 @@ export default function Home() {
                         <td className="px-6 py-4 text-right">
                           <div className="flex items-center justify-end gap-2">
                             <button 
-                              onClick={() => setEditingStaff(person)}
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-900 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-900 hover:text-white hover:border-slate-900 transition-all cursor-pointer"
+                              onClick={(e) => { e.stopPropagation(); setEditingStaff(person); }}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-900 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-900 hover:text-white hover:border-slate-900 transition-all shadow-sm cursor-pointer"
                             >
                               <Pencil className="w-3.5 h-3.5" />
                               Edit
@@ -870,6 +1450,21 @@ export default function Home() {
         editingStaff={editingStaff}
         setEditingStaff={setEditingStaff}
         handleStaffSubmit={handleStaffSubmit}
+        handleRemoveStaff={handleRemoveStaff}
+        isRemovingStaff={isRemovingStaff}
+      />
+
+      <AttendanceRegistrationModal
+        staff={registeringStaff}
+        defaultDate={reportDate}
+        onClose={() => setRegisteringStaff(null)}
+        onSuccess={() => {
+          setRegisteringStaff(null);
+          // Refresh attendance for the current reportDate to immediately reflect changes
+          if (reportDate) {
+            fetchAttendance(reportDate);
+          }
+        }}
       />
 
       {/* Payslip Preview Modal */}
@@ -1023,18 +1618,18 @@ export default function Home() {
                             <div className="flex flex-col md:grid md:grid-cols-[minmax(220px,1.5fr)_minmax(150px,1.2fr)_210px] gap-3 md:gap-5 px-5 py-4 items-start md:items-center border-b-0">
                               <div className="min-w-0">
                                 <div className="flex items-center gap-2">
-                                  <p className="text-sm font-semibold text-slate-900 truncate">{entry.staff.name}</p>
+                                  <p className="text-sm font-semibold text-slate-900 truncate">{formatNameLastFirst(entry.staff.name)}</p>
                                   {entry.isUpdate && (
                                     <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-amber-100 text-amber-700 border border-amber-200">
                                       Update
                                     </span>
                                   )}
                                 </div>
-                                <p className="text-xs text-slate-500">#{entry.staff.employee_id}</p>
+                                <p className="text-xs text-slate-500">{entry.staff.employee_id}</p>
                               </div>
                               <div className="min-w-0">
                                 <p className="text-sm text-slate-700 truncate">{entry.staff.trn}</p>
-                                <p className="text-xs text-slate-400">{entry.dateSent}</p>
+                                <p className="text-xs text-slate-400">{formatDayFirstDate(entry.dateSent)}</p>
                               </div>
                               <div className="flex items-center justify-start md:justify-end gap-2 w-full md:w-auto mt-2 md:mt-0">
                                 <button
@@ -1098,7 +1693,7 @@ export default function Home() {
                           </div>
                           <div>
                             <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Pay date</p>
-                            <p className="text-sm text-slate-700">{entry.payslip.payDate || 'Not listed'}</p>
+                            <p className="text-sm text-slate-700">{entry.payslip.payDate ? formatDayFirstDate(entry.payslip.payDate) : 'Not listed'}</p>
                           </div>
                         </div>
                       ))}

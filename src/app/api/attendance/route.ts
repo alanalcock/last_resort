@@ -4,6 +4,20 @@ import { prisma } from '@/lib/db';
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
+    const date = searchParams.get('date');
+
+    if (date) {
+      const logs = await prisma.attendanceLog.findMany({
+        where: {
+          date: String(date).trim(),
+        },
+        include: {
+          staff: true,
+        },
+      });
+      return NextResponse.json(logs);
+    }
+
     const staffId = Number(searchParams.get('staffId'));
     const month = searchParams.get('month');
 

@@ -8,6 +8,7 @@ export async function POST(req: Request) {
     const { searchParams } = new URL(req.url);
     const targetRole = searchParams.get('role') || 'employee';
     const sessionCookie = (await cookies()).get('session')?.value;
+    const adminDelegate = (prisma as any).admin ?? null;
 
     if (!sessionCookie) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
@@ -15,33 +16,42 @@ export async function POST(req: Request) {
 
     // 1. SWITCH TO EMPLOYEE VIEW
     if (targetRole === 'employee') {
-      let staffId: number | null = null;
-
       if (sessionCookie.startsWith('admin-session-')) {
+        if (adminDelegate) {
+          return NextResponse.json(
+            {
+              error:
+                'Administrator accounts are now separate from staff records and cannot switch into employee view.',
+            },
+            { status: 400 },
+          );
+        }
+
         const staffIdStr = sessionCookie.replace('admin-session-', '');
-        staffId = parseInt(staffIdStr, 10);
-      } else {
-        // Default admin or unrecognized admin session cannot switch to employee view
-        return NextResponse.json({ error: 'System Owner cannot switch to employee view as they have no linked staff profile.' }, { status: 400 });
+        const staffId = parseInt(staffIdStr, 10);
+        const staff = await prisma.staff.findUnique({
+          where: { id: staffId },
+        });
+
+        if (!staff) {
+          return NextResponse.json({ error: 'Linked staff profile not found.' }, { status: 404 });
+        }
+
+        // Convert legacy admin session to standard employee session
+        await createSession({
+          staffId: staff.id,
+          trn: staff.trn || '',
+          employee_id: staff.employee_id || '',
+          name: staff.name,
+        });
+
+        return NextResponse.json({ success: true });
       }
 
-      const staff = await prisma.staff.findUnique({
-        where: { id: staffId },
-      });
-
-      if (!staff) {
-        return NextResponse.json({ error: 'Linked staff profile not found.' }, { status: 404 });
-      }
-
-      // Convert admin session to standard employee session
-      await createSession({
-        staffId: staff.id,
-        trn: staff.trn || '',
-        employee_id: staff.employee_id || '',
-        name: staff.name,
-      });
-
-      return NextResponse.json({ success: true });
+      return NextResponse.json(
+        { error: 'Only administrator sessions can switch role.' },
+        { status: 400 },
+      );
     }
 
     // 2. SWITCH TO ADMIN VIEW
@@ -58,6 +68,16 @@ export async function POST(req: Request) {
 
       if (!staff) {
         return NextResponse.json({ error: 'Staff profile not found.' }, { status: 404 });
+      }
+
+      if (adminDelegate) {
+        return NextResponse.json(
+          {
+            error:
+              'Staff and administrator accounts are separate in this environment. Sign in with an administrator account to access admin view.',
+          },
+          { status: 403 },
+        );
       }
 
       // Check if this staff member has admin privileges in admins_list

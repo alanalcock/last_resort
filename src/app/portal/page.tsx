@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { LogOut, User, FileText, Download, Calendar, Loader2, Eye, X } from 'lucide-react';
 import { handleDownloadPDF, generatePDFBlobUrl } from '@/lib/pdfGenerator';
+import { formatDayFirstDate } from '@/lib/payroll/utils';
 
 type UserProfile = {
   id: number;
@@ -26,6 +27,8 @@ export default function PortalPage() {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [activePreviewUrl, setActivePreviewUrl] = useState<string | null>(null);
   const [previewPeriod, setPreviewPeriod] = useState<string>('');
+
+  const formatPayslipDate = (value: string | undefined) => (value ? formatDayFirstDate(value) : 'Unknown Date');
 
   // Load profile & payslips on load
   useEffect(() => {
@@ -107,7 +110,7 @@ export default function PortalPage() {
     try {
       const url = await generatePDFBlobUrl(staffObj, payslip.payslip_data);
       setActivePreviewUrl(url);
-      setPreviewPeriod(payslip.date_sent || payslip.payslip_data?.payDate || 'Unknown Date');
+      setPreviewPeriod(formatPayslipDate(payslip.date_sent || payslip.payslip_data?.payDate));
     } catch (err) {
       console.error('Error viewing PDF:', err);
       alert('Failed to generate preview. Please download the PDF instead.');
@@ -226,7 +229,7 @@ export default function PortalPage() {
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="font-extrabold text-sm text-slate-950 break-words">
-                        {payslip.date_sent || payslip.payslip_data?.payDate || 'Unknown Date'}
+                        {formatPayslipDate(payslip.date_sent || payslip.payslip_data?.payDate)}
                       </p>
                       <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Published</p>
                     </div>
@@ -274,7 +277,7 @@ export default function PortalPage() {
                           </div>
                           <div>
                             <p className="font-extrabold text-sm text-slate-950">
-                              {payslip.date_sent || payslip.payslip_data?.payDate || 'Unknown Date'}
+                              {formatPayslipDate(payslip.date_sent || payslip.payslip_data?.payDate)}
                             </p>
                             <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Published</p>
                           </div>

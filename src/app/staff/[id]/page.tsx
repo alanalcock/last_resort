@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useStaffProfileData } from '@/hooks/useStaffProfileData';
-import { formatPayslipCell } from '@/lib/payroll/utils';
+import { formatDayFirstDate, formatPayslipCell, formatNameLastFirst, normalizeDateInputToIso } from '@/lib/payroll/utils';
 import { StaffEditModal } from '@/components/staff/StaffEditModal';
 import { handleDownloadPDF } from '@/lib/pdfGenerator';
 import { type ParsedPayslipRecord } from '@/lib/fileParser';
@@ -83,12 +83,42 @@ const getExpiryStatus = (expiryDateStr: string | null | undefined) => {
   }
 };
 
+const getInsuranceCoverageValue = (value: string | null | undefined) => {
+  if (!value) return 'None';
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'no' ? 'No' : 'Yes';
+};
+
+const getEmployeeStatusBadge = (value: string | null | undefined) => {
+  const normalized = (value || 'Full-Time').trim();
+
+  if (normalized === 'Terminated') {
+    return {
+      label: 'Terminated',
+      className: 'border-red-200/60 bg-red-50 text-red-700',
+    };
+  }
+
+  if (normalized === 'Part-Time') {
+    return {
+      label: 'Part-Time',
+      className: 'border-amber-200/60 bg-amber-50 text-amber-700',
+    };
+  }
+
+  return {
+    label: normalized === 'Full-Time' ? 'Full-Time' : normalized,
+    className: 'border-green-200/50 bg-green-50 text-green-700',
+  };
+};
+
 export default function StaffProfilePage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const staffId = Number(params.id);
 
   const [editingStaff, setEditingStaff] = useState<StaffRecord | null>(null);
+  const [isRemovingStaff, setIsRemovingStaff] = useState(false);
   const [attendanceMonth, setAttendanceMonth] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -165,22 +195,26 @@ export default function StaffProfilePage() {
     }
 
     const formData = new FormData(e.target as HTMLFormElement);
+    const firstName = formData.get('firstName') as string || '';
+    const lastName = formData.get('lastName') as string || '';
+    const fullName = [firstName.trim(), lastName.trim()].filter(Boolean).join(' ');
+
     const updatedStaffData = {
-      name: formData.get('name') as string,
+      name: fullName,
       trn: formData.get('trn') as string,
       nis_number: formData.get('nis_number') as string,
       employee_id: formData.get('employee_id') as string,
-      dob: formData.get('dob') as string,
+      dob: normalizeDateInputToIso(formData.get('dob')),
       home_address: formData.get('home_address') as string,
-      employment_date: formData.get('employment_date') as string,
+      employment_date: normalizeDateInputToIso(formData.get('employment_date')),
       insurance: formData.get('insurance') as string,
       insurance_expiry: formData.get('insurance_expiry') as string,
       psra: formData.get('psra') as string,
-      psra_expiry: formData.get('psra_expiry') as string,
+      psra_expiry: normalizeDateInputToIso(formData.get('psra_expiry')),
       job_role: formData.get('job_role') as string,
       email: editingStaff.email || null,
       phone: formData.get('phone') as string,
-      status: (formData.get('status') as string) || editingStaff.status || 'Employeed',
+      status: (formData.get('status') as string) || editingStaff.status || 'Full-Time',
       send_whatsapp: editingStaff.send_whatsapp ?? !!(formData.get('phone') as string)?.trim(),
       send_email: editingStaff.send_email ?? false,
     };
@@ -218,6 +252,43 @@ export default function StaffProfilePage() {
       setEditingStaff(null);
     } catch (submitError) {
       console.error('Staff update error:', submitError);
+    }
+  };
+
+  const handleRemoveStaff = async () => {
+    if (!editingStaff || editingStaff.id === undefined || editingStaff.id === null) {
+      return;
+    }
+
+    const staffIdToRemove = Number(editingStaff.id);
+    const confirmed = window.confirm(
+      `Remove ${editingStaff.name || 'this staff member'}? This will also remove their attendance, portal payslip logs, and saved payslip records.`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setIsRemovingStaff(true);
+
+    try {
+      const response = await fetch('/api/staff', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: staffIdToRemove }),
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result?.error || 'Unable to remove staff.');
+      }
+
+      setEditingStaff(null);
+      router.replace('/');
+    } catch (removeError) {
+      console.error('Remove staff error:', removeError);
+    } finally {
+      setIsRemovingStaff(false);
     }
   };
 
@@ -307,9 +378,8 @@ export default function StaffProfilePage() {
     );
   }
 
-  const isAlfredMorgan = staff?.name?.trim() === 'Alfred Morgan';
-  const displayInsuranceExpiry = isAlfredMorgan ? '2026-05-31' : staff.insurance_expiry;
-  const displayPsraExpiry = isAlfredMorgan ? '2026-06-15' : staff.psra_expiry;
+  const displayPsraExpiry = staff.psra_expiry;
+  const employeeStatus = getEmployeeStatusBadge(staff.status);
 
   return (
     <div className="min-h-screen bg-slate-100">
@@ -323,11 +393,11 @@ export default function StaffProfilePage() {
               <ArrowLeft className="h-4 w-4" />
               Back to staff list
             </Link>
-            <h1 className="text-2xl font-bold text-slate-900 break-words">{staff.name}</h1>
+            <h1 className="text-2xl font-bold text-slate-900 break-words">{formatNameLastFirst(staff.name)}</h1>
           </div>
           <div className="shrink-0 sm:text-right">
             <span className="inline-flex items-center gap-2 rounded-xl border border-slate-950 bg-slate-950 px-4 py-2.5 text-sm font-semibold text-slate-400 shadow-md animate-in fade-in duration-300">
-              Employee ID <span className="text-base font-extrabold text-white">#{staff.employee_id}</span>
+              Employee ID <span className="text-base font-extrabold text-white">{staff.employee_id}</span>
             </span>
           </div>
         </div>
@@ -364,38 +434,28 @@ export default function StaffProfilePage() {
               </div>
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Date of Birth</p>
-                <p className="text-sm font-semibold text-slate-800">{staff.dob || 'None'}</p>
+                <p className="text-sm font-semibold text-slate-800">{formatDayFirstDate(staff.dob)}</p>
               </div>
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Date of Employment</p>
-                <p className="text-sm font-semibold text-slate-800">{staff.employment_date || 'None'}</p>
+                <p className="text-sm font-semibold text-slate-800">{formatDayFirstDate(staff.employment_date)}</p>
               </div>
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Insurance</p>
                 <p className="text-sm font-semibold text-slate-800">{staff.insurance || 'None'}</p>
               </div>
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Insurance Expiry</p>
-                <div className="mt-1 flex flex-wrap items-center gap-2">
-                  <p className="text-sm font-semibold text-slate-800">{displayInsuranceExpiry || 'None'}</p>
-                  {(() => {
-                    const status = getExpiryStatus(displayInsuranceExpiry);
-                    return status ? (
-                      <span className={`inline-flex rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider border ${status.className}`}>
-                        {status.label}
-                      </span>
-                    ) : null;
-                  })()}
-                </div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Insurance Coverage</p>
+                <p className="text-sm font-semibold text-slate-800">{getInsuranceCoverageValue(staff.insurance_expiry)}</p>
               </div>
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">PSRA</p>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">PSRA ID</p>
                 <p className="text-sm font-semibold text-slate-800">{staff.psra || 'None'}</p>
               </div>
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">PSRA Expiry</p>
                 <div className="mt-1 flex flex-wrap items-center gap-2">
-                  <p className="text-sm font-semibold text-slate-800">{displayPsraExpiry || 'None'}</p>
+                  <p className="text-sm font-semibold text-slate-800">{formatDayFirstDate(displayPsraExpiry)}</p>
                   {(() => {
                     const status = getExpiryStatus(displayPsraExpiry);
                     return status ? (
@@ -413,16 +473,8 @@ export default function StaffProfilePage() {
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Status</p>
                 <div className="mt-1">
-                  <span
-                    className={`inline-flex rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider border ${
-                      staff.status === 'Employeed' || !staff.status
-                        ? 'border-green-200/50 bg-green-50 text-green-700'
-                        : staff.status === 'Unemployees'
-                          ? 'border-slate-200 bg-slate-50 text-slate-500'
-                          : 'border-amber-200/60 bg-amber-50 text-amber-700'
-                    }`}
-                  >
-                    {staff.status || 'Employeed'}
+                  <span className={`inline-flex rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider border ${employeeStatus.className}`}>
+                    {employeeStatus.label}
                   </span>
                 </div>
               </div>
@@ -523,7 +575,7 @@ export default function StaffProfilePage() {
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <Calendar className="h-4 w-4 text-slate-400" />
-                          <span className="text-sm font-bold text-slate-800">{log.dateSent}</span>
+                          <span className="text-sm font-bold text-slate-800">{formatDayFirstDate(log.dateSent)}</span>
                         </div>
                         <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
                           <span>
@@ -582,7 +634,7 @@ export default function StaffProfilePage() {
                 <div className="min-w-0">
                   <h3 className="text-base font-bold text-slate-900 sm:text-lg">Payslip Preview</h3>
                   <p className="break-words text-xs font-medium text-slate-500">
-                    {previewInvoice.payslip?.employeeName || previewInvoice.staffData.name}
+                    {previewInvoice.payslip?.employeeName || formatNameLastFirst(previewInvoice.staffData.name)}
                     {previewInvoice.payslip?.department ? ` - ${previewInvoice.payslip.department}` : ''}
                   </p>
                 </div>
@@ -803,6 +855,8 @@ export default function StaffProfilePage() {
         editingStaff={editingStaff}
         setEditingStaff={setEditingStaff}
         handleStaffSubmit={handleStaffSubmit}
+        handleRemoveStaff={handleRemoveStaff}
+        isRemovingStaff={isRemovingStaff}
       />
     </div>
   );

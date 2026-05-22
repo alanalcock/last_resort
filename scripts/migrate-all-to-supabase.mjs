@@ -40,6 +40,24 @@ async function main() {
     const broadcastRows = data.broadcasts || [];
     const payslipRows = data.payslips || [];
     const attendanceRows = data.attendance || [];
+    const adminSetting = settingRows.find((row) => row.key === 'admins_list');
+    let adminRows = [];
+    if (adminSetting?.value) {
+      try {
+        const parsedAdmins = JSON.parse(adminSetting.value);
+        if (Array.isArray(parsedAdmins)) {
+          adminRows = parsedAdmins;
+        }
+      } catch (err) {
+        console.error('Failed to parse legacy admins_list:', err.message);
+      }
+    }
+    const legacyAdminStaffIds = new Set(
+      adminRows
+        .filter((admin) => !admin?.isDefault && admin?.staffId)
+        .map((admin) => Number(admin.staffId))
+        .filter((id) => Number.isFinite(id))
+    );
 
     console.log(`\n--- Starting Data Migration ---`);
     console.log(`Staff records:      ${staffRows.length}`);
@@ -48,12 +66,17 @@ async function main() {
     console.log(`BroadcastRun records:${broadcastRows.length}`);
     console.log(`Payslip records:    ${payslipRows.length}`);
     console.log(`AttendanceLog records: ${attendanceRows.length}`);
+    console.log(`Admin records:      ${adminRows.length > 0 ? adminRows.length : 1}`);
     console.log(`--------------------------------\n`);
 
     // 1. Migrate Staff
     console.log('Migrating Staff...');
     let staffCount = 0;
     for (const row of staffRows) {
+      if (legacyAdminStaffIds.has(Number(row.id))) {
+        continue;
+      }
+
       const createdAt = new Date(row.created_at || Date.now());
       const updatedAt = new Date(row.updated_at || Date.now());
       const sendWhatsapp = row.send_whatsapp === 1 || row.send_whatsapp === true;
@@ -313,9 +336,47 @@ async function main() {
     }
     console.log(`AttendanceLogs migration completed: ${attendanceCount}/${attendanceRows.length} successfully migrated.`);
 
-    // 7. Reset Postgres ID Auto-increment Sequences
+    // 7. Migrate Admins
+    console.log('Migrating Admins...');
+    const fallbackAdmins = adminRows.length > 0
+      ? adminRows
+      : [{ name: 'Default Admin', username: 'admin', password: 'admin', role: 'System Owner', isDefault: true }];
+    let adminCount = 0;
+    for (const row of fallbackAdmins) {
+      const createdAt = new Date(row.created_at || Date.now());
+      const updatedAt = new Date(row.updated_at || Date.now());
+      const query = `
+        INSERT INTO "Admin" (
+          "name", "username", "password", "role", "is_default", "created_at", "updated_at"
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT ("username") DO UPDATE SET
+          "name" = EXCLUDED."name",
+          "password" = EXCLUDED."password",
+          "role" = EXCLUDED."role",
+          "is_default" = EXCLUDED."is_default",
+          "updated_at" = EXCLUDED."updated_at"
+      `;
+      const values = [
+        row.name || 'Administrator',
+        String(row.username || '').trim().toLowerCase(),
+        row.password || null,
+        row.role || 'Administrator',
+        Boolean(row.isDefault),
+        createdAt,
+        updatedAt,
+      ];
+      try {
+        await client.query(query, values);
+        adminCount++;
+      } catch (err) {
+        console.error(`Failed to migrate Admin ${row.username}:`, err.message);
+      }
+    }
+    console.log(`Admins migration completed: ${adminCount}/${fallbackAdmins.length} successfully migrated.`);
+
+    // 8. Reset Postgres ID Auto-increment Sequences
     console.log('\nResetting primary key auto-increment sequences in PostgreSQL...');
-    const tablesToReset = ['Staff', 'DeliveryLog', 'BroadcastRun', 'Payslip', 'AttendanceLog'];
+    const tablesToReset = ['Staff', 'Admin', 'DeliveryLog', 'BroadcastRun', 'Payslip', 'AttendanceLog'];
     for (const table of tablesToReset) {
       try {
         await client.query(`SELECT setval(pg_get_serial_sequence('"${table}"', 'id'), coalesce(max(id), 1)) FROM "${table}"`);
