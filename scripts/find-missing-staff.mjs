@@ -3,7 +3,7 @@ import xlsx from 'xlsx';
 import path from 'path';
 import dotenv from 'dotenv';
 
-// Load env
+// Load env variables
 dotenv.config({ path: '.env' });
 
 const prisma = new PrismaClient();
@@ -25,20 +25,20 @@ function cleanName(rawName) {
   );
 }
 
+// Normalize names for comparison (remove extra spaces, punctuation, lowercase)
+function normalizeName(name) {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 async function main() {
   const filePath = path.resolve(process.cwd(), '../STAFF_TRN.xlsx');
   console.log(`Reading file: ${filePath}`);
   
-  if (!xlsx.utils) {
-      console.error("XLSX utils not found. Make sure xlsx is installed.");
-      return;
-  }
-
   const wb = xlsx.readFile(filePath);
   const sheet = wb.Sheets[wb.SheetNames[0]];
   const rows = xlsx.utils.sheet_to_json(sheet, { header: 1 });
   
-  const staffRecords = [];
+  const excelRecords = [];
   let current = {};
   
   for (let i = 0; i < rows.length; i++) {
@@ -76,46 +76,50 @@ async function main() {
     }
     
     if (row[1] === 'Address:' && current.employee_id) {
-      staffRecords.push(current);
+      excelRecords.push(current);
       current = {};
     }
   }
   
-  console.log(`Parsed ${staffRecords.length} staff records from Excel.`);
+  console.log(`Parsed ${excelRecords.length} staff records from Excel.`);
   
-  if (staffRecords.length === 0) {
-    console.log("No records found to import.");
-    return;
-  }
+  // Fetch existing staff from local database (which points to Supabase in env)
+  console.log('Fetching existing staff from database...');
+  const dbStaff = await prisma.staff.findMany();
+  console.log(`Found ${dbStaff.length} staff records in the database.`);
   
-  console.log('Fetching existing staff from local database...');
-  const existingStaff = await prisma.staff.findMany();
+  // Maps/Sets for database staff lookup
+  const dbIds = new Set(dbStaff.map(s => s.employee_id).filter(Boolean));
+  const dbTrns = new Set(dbStaff.map(s => s.trn?.replace(/\D/g, '')).filter(Boolean));
+  const dbNamesNormalized = new Set(dbStaff.map(s => normalizeName(s.name)));
   
-  console.log('Processing upserts...');
-  let upsertCount = 0;
-  for (const r of staffRecords) {
-    const existing = existingStaff.find(s => 
-      (r.employee_id && s.employee_id === r.employee_id) ||
-      (r.trn && s.trn && s.trn.replace(/\D/g, '') === r.trn.replace(/\D/g, '')) ||
-      (r.nis_number && s.nis_number && s.nis_number.trim() === r.nis_number.trim())
-    );
-
-    if (existing) {
-        const updated = await prisma.staff.update({
-            where: { id: existing.id },
-            data: { ...r, updated_at: new Date() }
-        });
-        Object.assign(existing, updated);
-    } else {
-        const created = await prisma.staff.create({
-            data: { ...r, email: null }
-        });
-        existingStaff.push(created);
+  const missingByEmpIdAndName = [];
+  
+  for (const record of excelRecords) {
+    const cleanRecordTrn = record.trn ? record.trn.replace(/\D/g, '') : null;
+    const normalizedRecordName = normalizeName(record.name);
+    
+    const hasIdMatch = record.employee_id && dbIds.has(record.employee_id);
+    const hasTrnMatch = cleanRecordTrn && dbTrns.has(cleanRecordTrn);
+    const hasNameMatch = dbNamesNormalized.has(normalizedRecordName);
+    
+    // If not found in DB by ID, TRN, or Name, it is missing
+    if (!hasIdMatch && !hasTrnMatch && !hasNameMatch) {
+      missingByEmpIdAndName.push(record);
     }
-    upsertCount++;
   }
   
-  console.log(`Successfully processed ${upsertCount} records into the local staff table.`);
+  console.log(`\n--- ANALYSIS RESULTS ---`);
+  console.log(`Total missing staff members: ${missingByEmpIdAndName.length}`);
+  
+  if (missingByEmpIdAndName.length > 0) {
+    console.log(`\nNames of missing staff members:`);
+    missingByEmpIdAndName.forEach((s, idx) => {
+      console.log(`${idx + 1}. ${s.name} (Employee ID: ${s.employee_id || 'N/A'}, TRN: ${s.trn || 'N/A'}, NIS: ${s.nis_number || 'N/A'})`);
+    });
+  } else {
+    console.log(`\nAll staff members in STAFF_TRN.xlsx exist in the database.`);
+  }
 }
 
 main()
