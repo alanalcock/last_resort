@@ -176,7 +176,7 @@ const parsePayslipBlocks = (rows: unknown[][]): ParsedPayslipRecord[] => {
 };
 
 export const parsePayrollFile = async (file: File): Promise<ParsedPayslipRecord[] | any[]> => {
-  const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls');
+  const isExcel = /\.(xlsx|xls)$/i.test(file.name);
 
   if (isExcel) {
     const XLSX = await import('xlsx');

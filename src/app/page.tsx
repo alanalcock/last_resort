@@ -1,16 +1,16 @@
 'use client';
 
-import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useDeferredValue, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useDashboardData } from '@/hooks/useDashboardData';
 import { parsePayrollFile, type ParsedPayslipRecord } from '@/lib/fileParser';
 import { buildPayrollPreview } from '@/lib/payroll/preview';
-import { DEFAULT_ADMINS, formatDayFirstDate, formatPayslipCell, normalizeDateInputToIso, formatNameLastFirst } from '@/lib/payroll/utils';
+import { formatDayFirstDate, formatPayslipCell, normalizeDateInputToIso, formatNameLastFirst } from '@/lib/payroll/utils';
 import { handleDownloadPDF } from '@/lib/pdfGenerator';
 import { AdminOptionsPanel } from '@/components/admin/AdminOptionsPanel';
 import { StaffEditModal } from '@/components/staff/StaffEditModal';
 import { AttendanceRegistrationModal } from '@/components/staff/AttendanceRegistrationModal';
-import type { AdminRecord, PreviewBatchEntry, StaffRecord, UnmatchedPayslipEntry } from '@/types/payroll';
+import type { PreviewBatchEntry, StaffRecord, UnmatchedPayslipEntry } from '@/types/payroll';
 import { 
   CloudUpload, 
   FileText, 
@@ -87,7 +87,6 @@ export default function Home() {
   });
 
   // Admin Management State
-  const [admins, setAdmins] = useState<AdminRecord[]>(DEFAULT_ADMINS);
   const [isAddingAdmin, setIsAddingAdmin] = useState(false);
 
   // Staff Editing State
@@ -101,8 +100,8 @@ export default function Home() {
     window.location.href = '/login';
   }, []);
   const {
-    admins: loadedAdmins,
-    setAdmins: setLoadedAdmins,
+    admins,
+    setAdmins,
     staffList,
     setStaffList,
     deliveryLogs,
@@ -115,6 +114,10 @@ export default function Home() {
 
   // Processing State
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isDraggingPayroll, setIsDraggingPayroll] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const payrollDragDepth = useRef(0);
+  const payrollUploadInProgress = useRef(false);
   const [processingStatus, setProcessingStatus] = useState('');
   const [processStats, setProcessStats] = useState({ total: 0, matched: 0, sent: 0 });
 
@@ -125,10 +128,6 @@ export default function Home() {
   const [showRetractModal, setShowRetractModal] = useState(false);
   const [selectedRetractDate, setSelectedRetractDate] = useState('');
   const [isRetracting, setIsRetracting] = useState(false);
-
-  useEffect(() => {
-    setAdmins(loadedAdmins);
-  }, [loadedAdmins]);
 
   const lastDeliveryByStaffId = useMemo(() => {
     const lookup = new Map<number, any>();
@@ -654,7 +653,6 @@ export default function Home() {
 
       const updatedAdmins = [...admins, newAdmin];
       setAdmins(updatedAdmins);
-      setLoadedAdmins(updatedAdmins);
       alert(`${name.trim()} has been added as an Administrator successfully!\n\nThey can log in using their username "${cleanUsername}" and default password "admin", and will be prompted to choose a new secure password on their first login.`);
       setIsAddingAdmin(false);
     } catch (error) {
@@ -686,7 +684,6 @@ export default function Home() {
 
       const updatedAdmins = admins.filter(a => String(a.id) !== String(adminId));
       setAdmins(updatedAdmins);
-      setLoadedAdmins(updatedAdmins);
       alert('Admin access has been successfully revoked.');
     } catch (e) {
       console.error(e);
@@ -722,10 +719,19 @@ export default function Home() {
     }
   };
 
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const uploadPayrollFile = async (file: File) => {
+    if (payrollUploadInProgress.current) return;
+    setUploadError('');
+    if (!/\.(csv|xlsx|xls)$/i.test(file.name)) {
+      setUploadError('Please upload a CSV, XLS, or XLSX file.');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setUploadError('Please upload a file no larger than 10MB.');
+      return;
+    }
 
+    payrollUploadInProgress.current = true;
     setIsProcessing(true);
     setProcessingStatus('Parsing file...');
     setProcessStats({ total: 0, matched: 0, sent: 0 });
@@ -739,9 +745,29 @@ export default function Home() {
 
     } catch (error) {
       console.error('Error processing file:', error);
-      setProcessingStatus('Error processing file. Please check the format.');
-      setTimeout(() => setIsProcessing(false), 3000);
+      setUploadError('Unable to process this payroll file. Please check its format and try again.');
+    } finally {
+      payrollUploadInProgress.current = false;
+      setIsProcessing(false);
     }
+  };
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    if (file) void uploadPayrollFile(file);
+  };
+
+  const handlePayrollDrop = (event: React.DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    payrollDragDepth.current = 0;
+    setIsDraggingPayroll(false);
+    const files = event.dataTransfer.files;
+    if (files.length !== 1) {
+      setUploadError('Please drop one payroll file at a time.');
+      return;
+    }
+    void uploadPayrollFile(files[0]);
   };
 
   const processRecords = async (records: ParsedPayslipRecord[]) => {
@@ -1184,13 +1210,28 @@ export default function Home() {
                     <div className="absolute -inset-1 bg-gradient-to-r from-slate-900 to-slate-700 rounded-lg blur opacity-20 group-hover:opacity-40 transition duration-1000"></div>
                     <label 
                       htmlFor="file-upload" 
-                      className="relative flex flex-col items-center justify-center w-full h-56 px-4 py-8 bg-white border-2 border-dashed border-slate-200 rounded-lg cursor-pointer hover:border-slate-400/50 hover:bg-slate-50 transition-all duration-500"
+                      onDragEnter={(event) => {
+                        event.preventDefault();
+                        payrollDragDepth.current += 1;
+                        setIsDraggingPayroll(true);
+                      }}
+                      onDragOver={(event) => {
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = 'copy';
+                      }}
+                      onDragLeave={(event) => {
+                        event.preventDefault();
+                        payrollDragDepth.current = Math.max(0, payrollDragDepth.current - 1);
+                        if (payrollDragDepth.current === 0) setIsDraggingPayroll(false);
+                      }}
+                      onDrop={handlePayrollDrop}
+                      className={`relative flex flex-col items-center justify-center w-full h-56 px-4 py-8 border-2 border-dashed rounded-lg cursor-pointer transition-all duration-200 ${isDraggingPayroll ? 'border-indigo-500 bg-indigo-50' : 'bg-white border-slate-200 hover:border-slate-400/50 hover:bg-slate-50'}`}
                     >
                       <div className="w-16 h-16 bg-slate-50 rounded-lg flex items-center justify-center mb-4 group-hover:bg-white group-hover:scale-110 transition-all duration-500">
                         <CloudUpload className="w-8 h-8 text-slate-400 group-hover:text-slate-900" />
                       </div>
                       <p className="mb-2 text-base text-slate-600">
-                        <span className="font-semibold text-slate-900">Click to upload</span> or drag and drop
+                        {isDraggingPayroll ? 'Drop your payroll file here' : <><span className="font-semibold text-slate-900">Click to upload</span> or drag and drop</>}
                       </p>
                       <p className="text-xs text-slate-400">CSV, XLS, or XLSX up to 10MB</p>
                     </label>
@@ -1203,6 +1244,7 @@ export default function Home() {
                     />
                   </div>
                 )}
+                {uploadError && <p role="alert" className="mt-3 text-sm text-red-600">{uploadError}</p>}
                 
                 <div className="flex w-full flex-col sm:flex-row items-stretch sm:items-center gap-4 mt-8">
                   <button className="flex w-full sm:w-auto items-center justify-center gap-2 px-6 sm:px-8 py-3.5 sm:py-4 bg-slate-900 text-white rounded-lg font-semibold shadow-lg shadow-slate-900/10 hover:bg-slate-800 hover:shadow-xl transition-all active:scale-95">
@@ -1447,6 +1489,7 @@ export default function Home() {
       </div>
 
       <StaffEditModal
+        key={editingStaff?.id ?? 'new'}
         editingStaff={editingStaff}
         setEditingStaff={setEditingStaff}
         handleStaffSubmit={handleStaffSubmit}

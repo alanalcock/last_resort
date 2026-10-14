@@ -40,20 +40,10 @@ interface StaffEditModalProps {
 }
 
 const ThreeFieldDateInput = ({ name, defaultValue }: { name: string; defaultValue?: string }) => {
-  const [day, setDay] = React.useState('');
-  const [month, setMonth] = React.useState('');
-  const [year, setYear] = React.useState('');
-
-  React.useEffect(() => {
-    if (defaultValue) {
-      const parts = defaultValue.split('/');
-      if (parts.length === 3) {
-        setDay(parts[0]);
-        setMonth(parts[1]);
-        setYear(parts[2]);
-      }
-    }
-  }, [defaultValue]);
+  const parts = defaultValue?.split('/') ?? [];
+  const [day, setDay] = React.useState(() => parts.length === 3 ? parts[0] : '');
+  const [month, setMonth] = React.useState(() => parts.length === 3 ? parts[1] : '');
+  const [year, setYear] = React.useState(() => parts.length === 3 ? parts[2] : '');
 
   const combinedDate = (day && month && year) ? `${day.padStart(2, '0')}/${month.padStart(2, '0')}/${year}` : '';
 
